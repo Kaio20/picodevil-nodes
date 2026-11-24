@@ -14,9 +14,10 @@
  *   6. BRIGHTNESS (additive offset)
  *   7. CONTRAST  (centred contrast)
  *   8. COLOR_OKLAB (grey + tint + huerot, one OKLab round-trip)
- *   9. MATTE     (alpha keyed off a matte texture's luminance)
- *  10. VIGNETTE  (radial alpha falloff in the cell's own frame)
- *  11. ALPHA     (final multiply; always emitted)
+ *   9. LUMA_TO_ALPHA (convert the sampled color to a black or white overlay)
+ *  10. MATTE     (alpha keyed off a matte texture's luminance)
+ *  11. VIGNETTE  (radial alpha falloff in the cell's own frame)
+ *  12. ALPHA     (final multiply; always emitted)
  *
  * Op layout: every op is exactly 8 floats (2 vec4s in std140), packed:
  *   [0] kind
@@ -26,6 +27,8 @@
  * per op without any continuation logic. 32 bytes/op × 512 ops = 16 KB (the
  * WebGL2 minimum UBO size), so a 512-op cap is safe on all WebGL2 GPUs.
  */
+
+import type { LumaKey } from "./renderer-interface";
 
 // ---------------------------------------------------------------------------
 // Op codes — kept in sync with the GLSL interpreter constants in webgl-renderer.ts
@@ -54,6 +57,7 @@ export const OP_VIGNETTE    = 10;
 /** Alpha keyed off a matte texture's luminance (`.matte`). Like VIGNETTE it only
  *  multiplies alpha, so it sits with the colour ops, just before VIGNETTE. */
 export const OP_MATTE       = 11;
+export const OP_LUMA_TO_ALPHA = 12;
 
 /** Number of floats per op (one kind + 7 args). */
 export const OP_FLOATS = 8;
@@ -62,7 +66,7 @@ export const OP_FLOATS = 8;
  *  scratch buffer that holds a single chain — compile(), the renderer's
  *  opsScratch, and the UBO-overflow retry all rely on it. SMEAR occupies the
  *  SAMPLE slot rather than adding one, so it doesn't count toward the ceiling. */
-export const MAX_OPS = 11;
+export const MAX_OPS = 12;
 
 /**
  * Inputs the compiler needs from a DrawCommand. Mirrors the fields the
@@ -77,6 +81,7 @@ export interface EffectInputs {
   pixUVStepY:   number;
   contrast:     number;
   brightness:   number;
+  lumaToAlpha?: LumaKey;
   tintHue:      number;
   tintStrength: number;
   barrel:       number;
@@ -304,6 +309,14 @@ export function compileInto(e: EffectInputs, out: Float32Array, offset: number):
     out[i + 3] = e.tintStrength;
     out[i + 4] = e.hueRot;
     out[i + 5] = 0; out[i + 6] = 0; out[i + 7] = 0;
+    i += OP_FLOATS;
+    count++;
+  }
+
+  if (e.lumaToAlpha) {
+    out[i] = OP_LUMA_TO_ALPHA;
+    out[i + 1] = e.lumaToAlpha === 'black' ? 1 : 0; // Overlay RGB.
+    out[i + 2] = 0; out[i + 3] = 0; out[i + 4] = 0; out[i + 5] = 0; out[i + 6] = 0; out[i + 7] = 0;
     i += OP_FLOATS;
     count++;
   }

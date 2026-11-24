@@ -1,8 +1,8 @@
 import {
   getAllEntries, addMedia, removeMedia, renameMedia, updateUrl, updateEntry,
   isYouTubeUrl, downloadYouTube, exportAll, importAll, clearAll, setOnChange,
-  uploadToServer, addFromServer, missingFromServer, guessTypeFromFile, moveMediaBefore,
-  type MediaEntry, type SourceItem,
+  uploadToServer, addFromServer, missingFromServer, guessTypeFromFile, isTexture, moveMediaBefore,
+  type MediaCollection, type MediaEntry, type SourceItem,
 } from "./media-registry";
 import { getServerUrl, getServerStatus, subscribe as subscribeServer } from "./server-config";
 import { createServerSettingsButton } from "./server-settings-ui";
@@ -11,59 +11,16 @@ import {
   isStreamActive, setStreamOnChange, reconnectStreams,
 } from "./stream-manager";
 import { makeThumbCell, cellKey, insertName } from "./thumbs";
-import { ignoreDropClick, sidebarDrop } from "./node-sidebar-drag";
+import { ignoreDropClick, liftMediaThumbnail, sidebarDrop } from "./node-sidebar-drag";
+import { makeTextureCatalog } from "./texture-catalog";
+import type { NodeDrop } from "./node-graph";
 
-let container: HTMLElement;
-
-// The videos tab has two modes over the same media: "edit" (the row list, with
-// rename/url/delete) and "view" (a read-only grid of thumbnails, click to insert
-// a name). Persisted separately from, but in the same spirit as, the sidebar
-// state. Defaults to "view".
-const VIEW_MODE_KEY = "picodevil-videos-view";
 type ViewMode = "edit" | "view";
-let viewMode: ViewMode = localStorage.getItem(VIEW_MODE_KEY) === "edit" ? "edit" : "view";
-
-// Persisted scroll offset of the grid ("view") pane — restored across mode
-// toggles and reloads. `restoreGridScroll` gates a one-shot restore on the next
-// view render so ordinary re-renders (progress ticks, etc.) don't fight the user.
-const GRID_SCROLL_KEY = "picodevil-videos-scroll";
-let gridScroll = Number(localStorage.getItem(GRID_SCROLL_KEY)) || 0;
-let restoreGridScroll = true;
-let gridScrollTimer: ReturnType<typeof setTimeout> | undefined;
-
-function saveGridScroll() {
-  clearTimeout(gridScrollTimer);
-  gridScrollTimer = setTimeout(() => {
-    try { localStorage.setItem(GRID_SCROLL_KEY, String(Math.round(gridScroll))); } catch { /* storage disabled */ }
-  }, 200);
-}
-
-// The view⇄edit "thumbs fly" animation. Flip FLIP_MODE_SWITCH to false to kill it.
-const FLIP_MODE_SWITCH = true;
 const FLIP_MS = 300;
-let flipping = false;
-let flipToken = 0; // bumped per flip so a superseded flip's cleanup can bow out
+let render = () => {};
 
 function flipEnabled(): boolean {
-  return FLIP_MODE_SWITCH && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function setViewMode(mode: ViewMode) {
-  if (mode === viewMode) return;
-  flipping = false; // let a re-toggle mid-animation swap the panes
-  const first = flipEnabled() ? measureFlipRects() : null; // outgoing thumbnail positions
-  // Going list → thumbs, fade the outgoing list text out (rather than snapping to
-  // transparent when the pane is hidden). The grid has no separate text chrome
-  // (the label rides the flying cell), so only this direction needs it.
-  if (first && mode === "view") {
-    const list = container.querySelector<HTMLElement>("[data-list]");
-    if (list) fadeOutPane(list);
-  }
-  viewMode = mode;
-  try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch { /* storage disabled */ }
-  if (mode === "view") restoreGridScroll = true; // re-restore where they left off
-  render(); // swaps the panes
-  if (first?.size) playFlip(first);
+  return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 /** Snapshot a pane as a fixed-position clone over its current spot and fade it
@@ -96,7 +53,7 @@ function fadeOutPane(pane: HTMLElement) {
 
 /** Screen rects of every laid-out thumbnail (grid cell / row thumb), keyed by
  *  flip-key. Only the visible pane has non-zero rects, so this captures it. */
-function measureFlipRects(): Map<string, DOMRect> {
+function measureFlipRects(container: HTMLElement): Map<string, DOMRect> {
   const m = new Map<string, DOMRect>();
   container.querySelectorAll<HTMLElement>("[data-flip-key]").forEach(el => {
     const r = el.getBoundingClientRect();
@@ -107,60 +64,6 @@ function measureFlipRects(): Map<string, DOMRect> {
 
 /** FLIP: fly each incoming thumbnail from where its counterpart sat in the old
  *  pane to its new spot, scaling between the grid (120×90) and row (40×30). */
-function playFlip(first: Map<string, DOMRect>) {
-  const pane = container.querySelector<HTMLElement>(viewMode === "view" ? "[data-grid]" : "[data-list]");
-  const view = pane?.getBoundingClientRect();
-  const hit = (a: DOMRect, b: DOMRect) =>
-    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-
-  const anims: HTMLElement[] = [];
-  container.querySelectorAll<HTMLElement>("[data-flip-key]").forEach(el => {
-    const f = first.get(el.dataset.flipKey!);
-    if (!f) return;
-    const l = el.getBoundingClientRect();
-    if (!l.width || !l.height) return;                   // the now-hidden old pane
-    if (view && !hit(f, view) && !hit(l, view)) return;  // both off-screen — skip
-    const dx = f.left - l.left, dy = f.top - l.top;
-    const sx = f.width / l.width, sy = f.height / l.height;
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02) return;
-    el.style.transition = "none";
-    el.style.transformOrigin = "top left";
-    el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
-    anims.push(el);
-  });
-  if (!anims.length) return;
-  flipping = true; // pause render() so a playback save() can't reconcile mid-flight
-  pane?.classList.add("pd-chrome-in"); // fade the incoming pane's text/labels in
-  const token = ++flipToken;
-
-  // Release on the NEXT frame, not after a layout read: a composited transform
-  // isn't committed by reading offsetWidth, so inverting-then-clearing in the same
-  // frame coalesces into a no-op and the motion collapses to a jump. rAF lets the
-  // browser paint the inverted (First) state once, then animate it to identity.
-  requestAnimationFrame(() => {
-    for (const el of anims) {
-      el.style.transition = `transform ${FLIP_MS}ms cubic-bezier(0.33, 1, 0.68, 1)`;
-      el.style.transform = "";
-    }
-  });
-
-  // Clean up when the motion actually finishes (transitionend), not on a fixed
-  // timer — so cleanup can never clear a still-running transform and snap it,
-  // whatever the playback speed (e.g. slow-mo in the Animations inspector). The
-  // fallback only covers a genuinely missed transitionend.
-  const done = () => {
-    clearTimeout(fallback);
-    anims[0].removeEventListener("transitionend", done);
-    if (token !== flipToken) return; // superseded by a newer toggle — leave it be
-    for (const el of anims) { el.style.transition = ""; el.style.transformOrigin = ""; el.style.transform = ""; }
-    pane?.classList.remove("pd-chrome-in");
-    flipping = false;
-    render(); // catch up on anything deferred during the flight
-  };
-  anims[0].addEventListener("transitionend", done);
-  const fallback = setTimeout(done, 4000);
-}
-
 // Toggle icons (inline SVG so nothing is fetched at runtime; stroke inherits the
 // button's currentColor). Feather/Lucide "grid" and "edit-3", 24×24 stroke paths.
 const ICON_GRID =
@@ -179,7 +82,7 @@ export async function loadExampleMedia(names: readonly string[]) {
   const sources = defaultSources ?? await defaultSourcesRequest ?? [];
   const present = new Set(getAllEntries().map(entry => entry.name));
   const wanted = new Set(names);
-  addFromServer(sources.filter(item => item.name && wanted.has(item.name) && !present.has(item.name)));
+  addFromServer(sources.filter(item => item.name && wanted.has(item.name) && !present.has(item.name)), "videos");
 }
 
 /**
@@ -193,8 +96,13 @@ export function shouldAutoloadDefaults(isFreshSession: boolean, entryCount: numb
   return isFreshSession && entryCount === 0;
 }
 
-export function setupMediaLoader(el: HTMLElement, isFreshSession = false) {
-  container = el;
+export function setupMediaLoader(videos: HTMLElement, isFreshSession = false, textures?: HTMLElement | null) {
+  const renderVideos = createMediaTab(videos, "videos");
+  const renderTextures = textures && createMediaTab(textures, "textures");
+  render = () => {
+    renderVideos();
+    renderTextures?.();
+  };
   setOnChange(render);
   setStreamOnChange(render);
   // Re-render when the server connection status changes so the "Load all"
@@ -215,21 +123,388 @@ export function setupMediaLoader(el: HTMLElement, isFreshSession = false) {
   void defaultSourcesRequest.then(items => {
       if (items.length === 0) return;
       defaultSources = items;
-      if (shouldAutoloadDefaults(isFreshSession, getAllEntries().length)) {
-        addFromServer(defaultSources);
+      if (shouldAutoloadDefaults(isFreshSession, getAllEntries("videos").length)) {
+        addFromServer(defaultSources, "videos");
       }
       render();
     });
 
   // Reconnect persisted webcam streams (screen captures need manual reconnect)
   reconnectStreams().then(render);
+}
 
-  // Paste JSON to import
-  el.addEventListener("paste", (e) => {
+function createMediaTab(container: HTMLElement, collection: MediaCollection) {
+  const viewModeKey = "picodevil-" + collection + "-view";
+  const gridScrollKey = "picodevil-" + collection + "-scroll";
+  let viewMode: ViewMode = localStorage.getItem(viewModeKey) === "edit" ? "edit" : "view";
+  const catalog = collection === "textures" ? makeTextureCatalog(render) : undefined;
+  const serverSettings = createServerSettingsButton().el;
+
+  // Persisted scroll offset of the grid ("view") pane — restored across mode
+  // toggles and reloads. `restoreGridScroll` gates a one-shot restore on the next
+  // view render so ordinary re-renders (progress ticks, etc.) don't fight the user.
+  let gridScroll = Number(localStorage.getItem(gridScrollKey)) || 0;
+  let restoreGridScroll = true;
+  let gridScrollTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function saveGridScroll() {
+    clearTimeout(gridScrollTimer);
+    gridScrollTimer = setTimeout(() => {
+      try { localStorage.setItem(gridScrollKey, String(Math.round(gridScroll))); } catch { /* storage disabled */ }
+    }, 200);
+  }
+
+  let flipping = false;
+  let flipToken = 0;
+
+  function setViewMode(mode: ViewMode) {
+    if (mode === viewMode) return;
+    flipping = false; // let a re-toggle mid-animation swap the panes
+    const first = flipEnabled() ? measureFlipRects(container) : null; // outgoing thumbnail positions
+    // Going list → thumbs, fade the outgoing list text out (rather than snapping to
+    // transparent when the pane is hidden). The grid has no separate text chrome
+    // (the label rides the flying cell), so only this direction needs it.
+    if (first && mode === "view") {
+      const list = container.querySelector<HTMLElement>("[data-list]");
+      if (list) fadeOutPane(list);
+    }
+    viewMode = mode;
+    try { localStorage.setItem(viewModeKey, mode); } catch { /* storage disabled */ }
+    if (mode === "view") restoreGridScroll = true; // re-restore where they left off
+    render(); // swaps the panes
+    if (first?.size) playFlip(first);
+  }
+
+  function playFlip(first: Map<string, DOMRect>) {
+    const pane = container.querySelector<HTMLElement>(viewMode === "view" ? "[data-grid]" : "[data-list]");
+    const view = pane?.getBoundingClientRect();
+    const hit = (a: DOMRect, b: DOMRect) =>
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+
+    const anims: HTMLElement[] = [];
+    container.querySelectorAll<HTMLElement>("[data-flip-key]").forEach(el => {
+      const f = first.get(el.dataset.flipKey!);
+      if (!f) return;
+      const l = el.getBoundingClientRect();
+      if (!l.width || !l.height) return;                   // the now-hidden old pane
+      if (view && !hit(f, view) && !hit(l, view)) return;  // both off-screen — skip
+      const dx = f.left - l.left, dy = f.top - l.top;
+      const sx = f.width / l.width, sy = f.height / l.height;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02) return;
+      el.style.transition = "none";
+      el.style.transformOrigin = "top left";
+      el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      anims.push(el);
+    });
+    if (!anims.length) return;
+    flipping = true; // pause render() so a playback save() can't reconcile mid-flight
+    pane?.classList.add("pd-chrome-in"); // fade the incoming pane's text/labels in
+    const token = ++flipToken;
+
+    // Release on the NEXT frame, not after a layout read: a composited transform
+    // isn't committed by reading offsetWidth, so inverting-then-clearing in the same
+    // frame coalesces into a no-op and the motion collapses to a jump. rAF lets the
+    // browser paint the inverted (First) state once, then animate it to identity.
+    requestAnimationFrame(() => {
+      for (const el of anims) {
+        el.style.transition = `transform ${FLIP_MS}ms cubic-bezier(0.33, 1, 0.68, 1)`;
+        el.style.transform = "";
+      }
+    });
+
+    // Clean up when the motion actually finishes (transitionend), not on a fixed
+    // timer — so cleanup can never clear a still-running transform and snap it,
+    // whatever the playback speed (e.g. slow-mo in the Animations inspector). The
+    // fallback only covers a genuinely missed transitionend.
+    const done = () => {
+      clearTimeout(fallback);
+      anims[0].removeEventListener("transitionend", done);
+      if (token !== flipToken) return; // superseded by a newer toggle — leave it be
+      for (const el of anims) { el.style.transition = ""; el.style.transformOrigin = ""; el.style.transform = ""; }
+      pane?.classList.remove("pd-chrome-in");
+      flipping = false;
+      render(); // catch up on anything deferred during the flight
+    };
+    anims[0].addEventListener("transitionend", done);
+    const fallback = setTimeout(done, 4000);
+  }
+
+  function render() {
+    // Don't reflow the panes mid-drag or mid-flip: a save() from playback (durations
+    // loading, thumbnails finishing, progress ticks) would otherwise reconcile an
+    // animating element (snapping it to its final spot) and break the motion. Both
+    // finishDrag() and the flip's cleanup re-render once the animation ends.
+    if (drag?.active || flipping) return;
+
+    // First render: build the persistent structure (add bar + both view panes).
+    // These are never torn down so scroll positions and the add bar's input value
+    // survive subsequent renders; only the active pane is shown.
+    if (!container.querySelector("[data-add-bar]")) {
+      container.appendChild(makeAddBar());
+      if (catalog) container.append(catalog.controls, catalog.grid);
+    }
+    if (!container.querySelector("[data-list]")) {
+      const list = document.createElement("div");
+      list.dataset.list = "1";
+      list.className = "vid-list";
+      container.appendChild(list);
+    }
+    if (!container.querySelector("[data-grid]")) {
+      const grid = document.createElement("div");
+      grid.dataset.grid = "1";
+      grid.className = "thumbs-grid";
+      // Persist scroll as the user scrolls (skip the programmatic restore below,
+      // which would otherwise re-save a possibly-clamped value).
+      grid.addEventListener("scroll", () => {
+        if (restoreGridScroll) return;
+        gridScroll = grid.scrollTop;
+        saveGridScroll();
+      }, { passive: true });
+      container.appendChild(grid);
+    }
+
+    const list = container.querySelector<HTMLElement>("[data-list]")!;
+    const grid = container.querySelector<HTMLElement>("[data-grid]")!;
+    const editing = viewMode === "edit";
+    const browsing = catalog?.browsing();
+    list.style.display = !browsing && editing ? "" : "none";
+    grid.style.display = !browsing && !editing ? "" : "none";
+
+    // Reconcile only the visible pane in place — no scroll position lost. The
+    // hidden pane is left stale and refreshed the next time it's shown.
+    const entries = getAllEntries(collection);
+    if (!browsing && editing) {
+      reconcileList(list, entries);
+    } else if (!browsing) {
+      reconcileGrid(grid, entries);
+      // One-shot restore of the persisted scroll, once entries exist (rows are
+      // fixed-height, so the grid's full height is known as soon as they're added).
+      if (restoreGridScroll && entries.length > 0 && container.classList.contains("active")) {
+        grid.scrollTop = gridScroll;
+        restoreGridScroll = false;
+      }
+    }
+
+    // Footer has conditional buttons (Defaults, Load all, server status) and lives
+    // outside the scrollable area, so it's cheap and safe to rebuild each time.
+    const oldFooter = container.querySelector<HTMLElement>("[data-footer]");
+    const newFooter = makeFooter();
+    newFooter.dataset.footer = "1";
+    if (oldFooter) {
+      container.replaceChild(newFooter, oldFooter);
+    } else {
+      container.appendChild(newFooter);
+    }
+  }
+
+  function addUrl(url: string) {
+    const entry = addMedia(url, undefined, undefined, collection);
+    if (isYouTubeUrl(url)) downloadYouTube(entry.name);
+    catalog?.showLibrary();
+  }
+
+  function addFiles(files: FileList) {
+    if (files.length === 0) return;
+    for (const file of files) {
+      const type = guessTypeFromFile(file);
+      const name = file.name.replace(/\.[^.]+$/, "");
+      const entry = addMedia(URL.createObjectURL(file), name, type, collection);
+      // /upload transcodes to MP4. Keep local textures as images to preserve transparency.
+      if (collection === "textures" && type === "image") continue;
+      if (getServerUrl() && getServerStatus() !== "error") {
+        uploadToServer(entry.name, file).catch(err => {
+          if (/too large/i.test(err?.message ?? "")) showToast(err.message);
+        });
+      }
+    }
+    catalog?.showLibrary();
+  }
+
+  function importMedia(text: string) {
+    importAll(text, collection);
+    catalog?.showLibrary();
+  }
+
+  function makeAddBar(): HTMLElement {
+    const addBar = document.createElement("div");
+    addBar.dataset.addBar = "1";
+    addBar.className = "add-bar";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "paste URL to add...";
+    input.className = "pd-input";
+
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "Add";
+    addBtn.className = "pd-btn";
+    addBtn.addEventListener("click", () => {
+      const url = input.value.trim();
+      if (!url) return;
+      addUrl(url);
+      input.value = "";
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") addBtn.click();
+    });
+
+    const camBtn = document.createElement("button");
+    camBtn.textContent = "Webcam";
+    camBtn.className = "pd-btn";
+    camBtn.addEventListener("click", async () => {
+      try {
+        await startWebcam(undefined, undefined, collection);
+        catalog?.showLibrary();
+        render();
+      } catch (e: any) {
+        showToast(e.message ?? "Webcam failed");
+      }
+    });
+
+    const screenBtn = document.createElement("button");
+    screenBtn.textContent = "Screen";
+    screenBtn.className = "pd-btn";
+    screenBtn.addEventListener("click", async () => {
+      try {
+        await startScreenCapture(undefined, collection);
+        catalog?.showLibrary();
+        render();
+      } catch (e: any) {
+        showToast(e.message ?? "Screen capture failed");
+      }
+    });
+
+    addBar.appendChild(input);
+    addBar.appendChild(addBtn);
+    if (catalog) {
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = "image/*,video/*,.mkv,.avi";
+      fileInput.multiple = true;
+      fileInput.hidden = true;
+      fileInput.addEventListener("change", () => {
+        if (fileInput.files) addFiles(fileInput.files);
+        fileInput.value = "";
+      });
+      const files = document.createElement("button");
+      files.type = "button";
+      files.className = "pd-btn";
+      files.textContent = "Files";
+      files.title = "Open local media files. Local images are available for this session.";
+      files.addEventListener("click", () => fileInput.click());
+      addBar.append(files, fileInput);
+    }
+    addBar.appendChild(camBtn);
+    addBar.appendChild(screenBtn);
+    return addBar;
+  }
+
+  function makeFooter(): HTMLElement {
+    const footer = document.createElement("div");
+    footer.className = "vid-footer";
+
+    const leftGroup = document.createElement("div");
+    leftGroup.className = "vid-footer-left";
+    footer.appendChild(leftGroup);
+
+    const rightGroup = document.createElement("div");
+    rightGroup.className = "vid-footer-right";
+    footer.appendChild(rightGroup);
+
+    // Mode toggle — icon shows the mode you'd switch *to* (grid vs edit).
+    const goEdit = viewMode === "view";
+    const toggle = makeFooterBtn("", () => {
+      catalog?.showLibrary();
+      setViewMode(goEdit ? "edit" : "view");
+    });
+    toggle.classList.add("vid-view-toggle");
+    toggle.innerHTML = goEdit ? ICON_EDIT : ICON_GRID;
+    toggle.title = goEdit ? "Switch to edit view" : "Switch to grid view";
+    toggle.setAttribute("aria-label", toggle.title);
+    leftGroup.appendChild(toggle);
+
+    leftGroup.appendChild(makeFooterBtn("Export", () => {
+      navigator.clipboard.writeText(exportAll(collection)).then(
+        () => showToast("Copied to clipboard"),
+        () => showToast("Copy failed"),
+      );
+    }));
+
+    leftGroup.appendChild(makeFooterBtn("Import", () => {
+      navigator.clipboard.readText().then((text) => {
+        try {
+          importMedia(text);
+          showToast("Imported");
+        } catch {
+          showToast("Invalid JSON");
+        }
+      }).catch(() => showToast("Clipboard access denied"));
+    }));
+
+    const clearBtn = makeFooterBtn("Clear", () => {
+      clearBtn.textContent = "Confirm?";
+      clearBtn.style.color = "#f88";
+      const timeout = setTimeout(() => {
+        clearBtn.textContent = "Clear";
+        clearBtn.style.color = ""; // back to the class colour (+ restores :hover)
+      }, 2000);
+      clearBtn.addEventListener("click", () => {
+        clearTimeout(timeout);
+        clearAll(collection);
+      }, { once: true });
+    });
+    leftGroup.appendChild(clearBtn);
+
+    // "Defaults" (left group) — only when the fetched defaults contain media not
+    // already loaded. Disappears once everything's been pulled in.
+    const missingDefaults = collection === "videos" && defaultSources ? missingFromServer(defaultSources, collection) : [];
+    if (missingDefaults.length > 0) {
+      leftGroup.appendChild(makeFooterBtn("Defaults", () => {
+        const added = addFromServer(missingDefaults, collection);
+        showToast(`Added ${added} default${added === 1 ? "" : "s"}`);
+      }));
+    }
+
+    // "Load all" (right group) — only when we have a live connection. Pulls
+    // everything the server can currently serve via GET /list.
+    if (getServerUrl() && getServerStatus() === "ok") {
+      const addServerBtn = makeFooterBtn("Load all", async () => {
+        const base = getServerUrl();
+        if (!base) return;
+        addServerBtn.disabled = true;
+        try {
+          const res = await fetch(new URL("/list", base).href);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const items = await res.json() as SourceItem[];
+          const added = addFromServer(items, collection);
+          catalog?.showLibrary();
+          showToast(added > 0 ? `Added ${added} from server` : "Already up to date");
+        } catch {
+          showToast("Couldn't reach server");
+        } finally {
+          addServerBtn.disabled = false;
+        }
+      });
+      rightGroup.appendChild(addServerBtn);
+    }
+
+    // Server status / configuration (right group)
+    rightGroup.appendChild(serverSettings);
+
+    return footer;
+  }
+
+  container.addEventListener("paste", (e) => {
+    if (catalog && e.clipboardData?.files.length) {
+      e.preventDefault();
+      addFiles(e.clipboardData.files);
+      return;
+    }
     const text = e.clipboardData?.getData("text/plain")?.trim();
     if (!text || !text.startsWith("[")) return;
     try {
-      importAll(text);
+      importMedia(text);
       showToast("Imported from paste");
       e.preventDefault();
     } catch {
@@ -240,264 +515,35 @@ export function setupMediaLoader(el: HTMLElement, isFreshSession = false) {
   });
 
   // Drag & drop files or URLs
-  el.addEventListener("dragover", (e) => {
+  container.addEventListener("dragover", (e) => {
     e.preventDefault();
-    el.style.outline = "2px solid #666";
+    container.style.outline = "2px solid #666";
   });
-  el.addEventListener("dragleave", () => {
-    el.style.outline = "";
+  container.addEventListener("dragleave", () => {
+    container.style.outline = "";
   });
-  el.addEventListener("drop", (e) => {
+  container.addEventListener("drop", (e) => {
     e.preventDefault();
-    el.style.outline = "";
-    // Try files first
+    container.style.outline = "";
     if (e.dataTransfer?.files.length) {
-      for (const file of Array.from(e.dataTransfer.files)) {
-        const blobUrl = URL.createObjectURL(file);
-        const name = file.name.replace(/\.[^.]+$/, "");
-        // A blob: URL has no extension, so classify from the File's MIME/name
-        // up front — otherwise the entry defaults to "image" and s("name")
-        // would try to render a video as a still image.
-        const entry = addMedia(blobUrl, name, guessTypeFromFile(file));
-        if (getServerUrl() && getServerStatus() !== "error") {
-          uploadToServer(entry.name, file).catch((err) => {
-            // Most failures are stored on the entry (row shows an error + retry);
-            // surface the oversize case as a toast too, since it's a user action.
-            if (/too large/i.test(err?.message ?? "")) showToast(err.message);
-          });
-        }
-      }
+      addFiles(e.dataTransfer.files);
       return;
     }
     // Try text (URL or JSON)
     const text = e.dataTransfer?.getData("text/plain")?.trim();
     if (!text) return;
     if (text.startsWith("[")) {
-      try { importAll(text); showToast("Imported from drop"); return; }
+      try { importMedia(text); showToast("Imported from drop"); return; }
       catch { showToast("Import failed: invalid JSON"); return; }
     }
-    if (text.startsWith("http")) {
-      addMedia(text);
-      if (isYouTubeUrl(text)) {
-        const entries = getAllEntries();
-        downloadYouTube(entries[entries.length - 1].name);
-      }
-    }
-  });
-}
-
-function render() {
-  // Don't reflow the panes mid-drag or mid-flip: a save() from playback (durations
-  // loading, thumbnails finishing, progress ticks) would otherwise reconcile an
-  // animating element (snapping it to its final spot) and break the motion. Both
-  // finishDrag() and the flip's cleanup re-render once the animation ends.
-  if (drag?.active || flipping) return;
-
-  // First render: build the persistent structure (add bar + both view panes).
-  // These are never torn down so scroll positions and the add bar's input value
-  // survive subsequent renders; only the active pane is shown.
-  if (!container.querySelector("[data-add-bar]")) {
-    container.appendChild(makeAddBar());
-  }
-  if (!container.querySelector("[data-list]")) {
-    const list = document.createElement("div");
-    list.dataset.list = "1";
-    list.className = "vid-list";
-    container.appendChild(list);
-  }
-  if (!container.querySelector("[data-grid]")) {
-    const grid = document.createElement("div");
-    grid.dataset.grid = "1";
-    grid.className = "thumbs-grid";
-    // Persist scroll as the user scrolls (skip the programmatic restore below,
-    // which would otherwise re-save a possibly-clamped value).
-    grid.addEventListener("scroll", () => {
-      if (restoreGridScroll) return;
-      gridScroll = grid.scrollTop;
-      saveGridScroll();
-    }, { passive: true });
-    container.appendChild(grid);
-  }
-
-  const list = container.querySelector<HTMLElement>("[data-list]")!;
-  const grid = container.querySelector<HTMLElement>("[data-grid]")!;
-  const editing = viewMode === "edit";
-  list.style.display = editing ? "" : "none";
-  grid.style.display = editing ? "none" : "";
-
-  // Reconcile only the visible pane in place — no scroll position lost. The
-  // hidden pane is left stale and refreshed the next time it's shown.
-  const entries = getAllEntries();
-  if (editing) {
-    reconcileList(list, entries);
-  } else {
-    reconcileGrid(grid, entries);
-    // One-shot restore of the persisted scroll, once entries exist (rows are
-    // fixed-height, so the grid's full height is known as soon as they're added).
-    if (restoreGridScroll && entries.length > 0) {
-      grid.scrollTop = gridScroll;
-      restoreGridScroll = false;
-    }
-  }
-
-  // Footer has conditional buttons (Defaults, Load all, server status) and lives
-  // outside the scrollable area, so it's cheap and safe to rebuild each time.
-  const oldFooter = container.querySelector<HTMLElement>("[data-footer]");
-  const newFooter = makeFooter();
-  newFooter.dataset.footer = "1";
-  if (oldFooter) {
-    container.replaceChild(newFooter, oldFooter);
-  } else {
-    container.appendChild(newFooter);
-  }
-}
-
-function makeAddBar(): HTMLElement {
-  const addBar = document.createElement("div");
-  addBar.dataset.addBar = "1";
-  addBar.className = "add-bar";
-
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "paste URL to add...";
-  input.className = "pd-input";
-
-  const addBtn = document.createElement("button");
-  addBtn.textContent = "Add";
-  addBtn.className = "pd-btn";
-  addBtn.addEventListener("click", () => {
-    const url = input.value.trim();
-    if (!url) return;
-    const entry = addMedia(url);
-    input.value = "";
-    if (isYouTubeUrl(url)) downloadYouTube(entry.name);
+    if (text.startsWith("http")) addUrl(text);
   });
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") addBtn.click();
+  container.addEventListener("media-tab-activate", () => {
+    catalog?.activate();
+    render();
   });
-
-  const camBtn = document.createElement("button");
-  camBtn.textContent = "Webcam";
-  camBtn.className = "pd-btn";
-  camBtn.addEventListener("click", async () => {
-    try {
-      await startWebcam();
-      render();
-    } catch (e: any) {
-      showToast(e.message ?? "Webcam failed");
-    }
-  });
-
-  const screenBtn = document.createElement("button");
-  screenBtn.textContent = "Screen";
-  screenBtn.className = "pd-btn";
-  screenBtn.addEventListener("click", async () => {
-    try {
-      await startScreenCapture();
-      render();
-    } catch (e: any) {
-      showToast(e.message ?? "Screen capture failed");
-    }
-  });
-
-  addBar.appendChild(input);
-  addBar.appendChild(addBtn);
-  addBar.appendChild(camBtn);
-  addBar.appendChild(screenBtn);
-  return addBar;
-}
-
-function makeFooter(): HTMLElement {
-  const footer = document.createElement("div");
-  footer.className = "vid-footer";
-
-  const leftGroup = document.createElement("div");
-  leftGroup.className = "vid-footer-left";
-  footer.appendChild(leftGroup);
-
-  const rightGroup = document.createElement("div");
-  rightGroup.className = "vid-footer-right";
-  footer.appendChild(rightGroup);
-
-  // Mode toggle — icon shows the mode you'd switch *to* (grid vs edit).
-  const goEdit = viewMode === "view";
-  const toggle = makeFooterBtn("", () => setViewMode(goEdit ? "edit" : "view"));
-  toggle.classList.add("vid-view-toggle");
-  toggle.innerHTML = goEdit ? ICON_EDIT : ICON_GRID;
-  toggle.title = goEdit ? "Switch to edit view" : "Switch to grid view";
-  toggle.setAttribute("aria-label", toggle.title);
-  leftGroup.appendChild(toggle);
-
-  leftGroup.appendChild(makeFooterBtn("Export", () => {
-    navigator.clipboard.writeText(exportAll()).then(
-      () => showToast("Copied to clipboard"),
-      () => showToast("Copy failed"),
-    );
-  }));
-
-  leftGroup.appendChild(makeFooterBtn("Import", () => {
-    navigator.clipboard.readText().then((text) => {
-      try {
-        importAll(text);
-        showToast("Imported");
-      } catch {
-        showToast("Invalid JSON");
-      }
-    }).catch(() => showToast("Clipboard access denied"));
-  }));
-
-  const clearBtn = makeFooterBtn("Clear", () => {
-    clearBtn.textContent = "Confirm?";
-    clearBtn.style.color = "#f88";
-    const timeout = setTimeout(() => {
-      clearBtn.textContent = "Clear";
-      clearBtn.style.color = ""; // back to the class colour (+ restores :hover)
-    }, 2000);
-    clearBtn.addEventListener("click", () => {
-      clearTimeout(timeout);
-      clearAll();
-    }, { once: true });
-  });
-  leftGroup.appendChild(clearBtn);
-
-  // "Defaults" (left group) — only when the fetched defaults contain media not
-  // already loaded. Disappears once everything's been pulled in.
-  const missingDefaults = defaultSources ? missingFromServer(defaultSources) : [];
-  if (missingDefaults.length > 0) {
-    leftGroup.appendChild(makeFooterBtn("Defaults", () => {
-      const added = addFromServer(missingDefaults);
-      showToast(`Added ${added} default${added === 1 ? "" : "s"}`);
-    }));
-  }
-
-  // "Load all" (right group) — only when we have a live connection. Pulls
-  // everything the server can currently serve via GET /list.
-  if (getServerUrl() && getServerStatus() === "ok") {
-    const addServerBtn = makeFooterBtn("Load all", async () => {
-      const base = getServerUrl();
-      if (!base) return;
-      addServerBtn.disabled = true;
-      try {
-        const res = await fetch(new URL("/list", base).href);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const items = await res.json() as SourceItem[];
-        const added = addFromServer(items);
-        showToast(added > 0 ? `Added ${added} from server` : "Already up to date");
-      } catch {
-        showToast("Couldn't reach server");
-      } finally {
-        addServerBtn.disabled = false;
-      }
-    });
-    rightGroup.appendChild(addServerBtn);
-  }
-
-  // Server status / configuration (right group)
-  const { el: serverBtn } = createServerSettingsButton();
-  rightGroup.appendChild(serverBtn);
-
-  return footer;
+  return render;
 }
 
 /** Stable key representing the *structural* fields of an entry — if unchanged,
@@ -698,44 +744,20 @@ const DRAG_THRESHOLD = 6;   // px of movement to start a mouse drag / abort a to
 const TOUCH_HOLD_MS = 220;  // press-and-hold before a touch drag lifts
 
 type DragState = {
-  id: string; name: string; el: HTMLElement; pane: HTMLElement; axis: "x" | "y";
+  drop: NodeDrop; name: string; el: HTMLElement; handle: HTMLElement; pane: HTMLElement; axis: "x" | "y";
   pointerId: number; startX: number; startY: number;
   isTouch: boolean; active: boolean; holdTimer?: ReturnType<typeof setTimeout>;
-  offsetX: number; offsetY: number; clone?: HTMLElement;
+  preview?: ReturnType<typeof liftMediaThumbnail>;
 };
 let drag: DragState | null = null;
 
 function preventTouchScroll(e: TouchEvent) { if (drag?.active) e.preventDefault(); }
 
-/** Position the floating clone so the same point stays under the cursor. */
-function moveClone(x: number, y: number) {
-  if (!drag?.clone) return;
-  drag.clone.style.left = `${x - drag.offsetX}px`;
-  drag.clone.style.top = `${y - drag.offsetY}px`;
-}
-
 function beginActive() {
   if (!drag || drag.active) return;
   clearTimeout(drag.holdTimer);
   drag.active = true;
-  // The real element becomes an empty placeholder (holding the slot); a fixed-
-  // position clone rides the cursor. Only the placeholder moves in flow, so
-  // there's no reflow-vs-hit-test churn.
-  const rect = drag.el.getBoundingClientRect();
-  drag.offsetX = drag.startX - rect.left;
-  drag.offsetY = drag.startY - rect.top;
-  const clone = drag.el.cloneNode(true) as HTMLElement;
-  clone.classList.add("drag-clone");
-  clone.style.width = `${rect.width}px`;
-  clone.style.height = `${rect.height}px`;
-  // cloneNode copies input *attributes*, not live values (name/url are set as
-  // properties), so mirror them over — otherwise the row clone shows blank fields.
-  const src = drag.el.querySelectorAll("input");
-  const dst = clone.querySelectorAll("input");
-  src.forEach((inp, i) => { if (dst[i]) dst[i].value = inp.value; });
-  document.body.appendChild(clone);
-  drag.clone = clone;
-  moveClone(drag.startX, drag.startY);
+  drag.preview = liftMediaThumbnail(drag.handle, drag.startX, drag.startY);
   drag.el.classList.add("drag-placeholder");
   document.addEventListener("touchmove", preventTouchScroll, { passive: false });
 }
@@ -767,13 +789,15 @@ function onPointerMove(e: PointerEvent) {
     if (drag.isTouch) { finishDrag(false); return; } // moved before the hold → let it scroll
     beginActive();
   }
-  moveClone(e.clientX, e.clientY);
-  if (!sidebarDrop({ kind: "media", data: { media: drag.id } }, e.clientX, e.clientY)) previewAt(e.clientX, e.clientY);
+  drag.preview?.move(e.clientX, e.clientY);
+  if (!sidebarDrop(drag.drop, e.clientX, e.clientY, false, { hasThumbnail: true })) {
+    previewAt(e.clientX, e.clientY);
+  }
 }
 
 function onPointerUp(e: PointerEvent) {
   if (!drag || e.pointerId !== drag.pointerId) return;
-  const inGraph = drag.active && sidebarDrop({ kind: "media", data: { media: drag.id } }, e.clientX, e.clientY, true);
+  const inGraph = drag.active && sidebarDrop(drag.drop, e.clientX, e.clientY, true);
   const under = document.elementFromPoint(e.clientX, e.clientY);
   finishDrag(!inGraph && Boolean(under && drag.pane.contains(under)));
 }
@@ -782,20 +806,22 @@ function onPointerCancel(e: PointerEvent) {
 }
 
 function onDragKeyDown(e: KeyboardEvent) { if (e.key === "Escape") finishDrag(false); }
+function onDragBlur() { finishDrag(false); }
 
 function finishDrag(commit: boolean) {
   if (!drag) return;
-  const { el, name, active, clone } = drag;
+  const { el, name, active, preview } = drag;
   clearTimeout(drag.holdTimer);
   document.removeEventListener("pointermove", onPointerMove);
   document.removeEventListener("pointerup", onPointerUp);
   document.removeEventListener("pointercancel", onPointerCancel);
   document.removeEventListener("keydown", onDragKeyDown);
   document.removeEventListener("touchmove", preventTouchScroll);
+  window.removeEventListener("blur", onDragBlur);
   sidebarDrop(null);
   drag = null;
   if (!active) return; // never lifted → it was a tap/scroll; leave the click alone
-  clone?.remove();
+  preview?.remove();
   el.classList.remove("drag-placeholder");
   if (commit) {
     const next = el.nextElementSibling as HTMLElement | null;
@@ -815,14 +841,16 @@ function attachReorder(handle: HTMLElement, item: HTMLElement, entry: MediaEntry
     const pane = item.parentElement;
     if (!pane) return;
     drag = {
-      id: entry.id, name: entry.name, el: item, pane, axis,
+      drop: { kind: isTexture(entry) ? "texture" : "media", data: { media: entry.id } },
+      name: entry.name, el: item, handle, pane, axis,
       pointerId: e.pointerId, startX: e.clientX, startY: e.clientY,
-      isTouch: e.pointerType === "touch", active: false, offsetX: 0, offsetY: 0,
+      isTouch: e.pointerType === "touch", active: false,
     };
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("pointerup", onPointerUp);
     document.addEventListener("pointercancel", onPointerCancel);
     document.addEventListener("keydown", onDragKeyDown);
+    window.addEventListener("blur", onDragBlur);
     if (drag.isTouch) drag.holdTimer = setTimeout(beginActive, TOUCH_HOLD_MS);
   });
 }

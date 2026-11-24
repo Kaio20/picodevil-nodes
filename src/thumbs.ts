@@ -17,7 +17,11 @@ export function cellKey(e: MediaEntry): string {
   return `${e.name} ${e.thumbnail ?? ""} ${e.type} ${e.unavailable ? 1 : 0}`;
 }
 
-export function makeThumbCell(entry: MediaEntry, onPick: (name: string) => void): HTMLButtonElement {
+export function makeThumbCell(
+  entry: MediaEntry,
+  onPick: (name: string) => void,
+  options?: { label?: string; lazy?: boolean },
+): HTMLButtonElement {
   const cell = document.createElement("button");
   cell.className = "thumb-cell";
   cell.type = "button";
@@ -26,6 +30,7 @@ export function makeThumbCell(entry: MediaEntry, onPick: (name: string) => void)
 
   if (entry.thumbnail) {
     const img = document.createElement("img");
+    if (options?.lazy) img.loading = "lazy";
     img.src = entry.thumbnail;
     img.alt = entry.name;
     img.draggable = false;
@@ -45,7 +50,7 @@ export function makeThumbCell(entry: MediaEntry, onPick: (name: string) => void)
   bar.className = "thumb-bar";
   const label = document.createElement("span");
   label.className = "thumb-label";
-  label.textContent = entry.name;
+  label.textContent = options?.label ?? entry.name;
   bar.appendChild(label);
   cell.appendChild(bar);
 

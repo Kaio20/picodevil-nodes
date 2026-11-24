@@ -1,7 +1,10 @@
+import { bindNumberDrag } from "./node-number-input";
+
 type Point = { x: number; y: number };
 type Quad = [Point, Point, Point, Point];
 const storageKey = "nodesdevil-projection-v1";
 const widthKey = "nodesdevil-projection-width";
+const roundingKey = "nodesdevil-projection-rounding";
 const minWidth = 180;
 const defaultQuad = (): Quad => [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
 
@@ -27,6 +30,18 @@ function loadWidth(): number {
     if (Number.isFinite(width) && width >= minWidth) return width;
   } catch { /* The default size also works without storage. */ }
   return 320;
+}
+
+function clampRounding(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function loadRounding(): number {
+  try {
+    const value = Number(localStorage.getItem(roundingKey));
+    if (Number.isFinite(value)) return clampRounding(value);
+  } catch { /* The full frame also works without storage. */ }
+  return 0;
 }
 
 /** Map the source rectangle to the four corners with one projective transform. */
@@ -61,6 +76,7 @@ function copyFrame(source: HTMLCanvasElement, target: HTMLCanvasElement, pixelWi
 
 export class NodeProjection {
   private quad = loadQuad();
+  private rounding = loadRounding();
   private panel = document.createElement("section");
   private stage = document.createElement("div");
   private preview = document.createElement("canvas");
@@ -86,13 +102,11 @@ export class NodeProjection {
     const reset = document.createElement("button");
     reset.className = "nd-button";
     reset.textContent = "Reset";
-    reset.addEventListener("click", () => { this.quad = defaultQuad(); this.save(); this.layout(); });
     const close = document.createElement("button");
-    close.className = "nd-button";
+    close.className = "nd-button nd-projection-close";
     close.setAttribute("aria-label", "Close projection calibration");
     close.textContent = "×";
     close.addEventListener("click", () => this.setExpanded(false));
-    header.append(title, reset, close);
     const resize = document.createElement("button");
     resize.className = "nd-projection-resize";
     resize.type = "button";
@@ -126,6 +140,43 @@ export class NodeProjection {
       this.corners.push(handle);
       this.stage.append(handle);
     }
+    const controls = document.createElement("div");
+    controls.className = "nd-projection-controls";
+    const roundingLabel = document.createElement("label");
+    roundingLabel.className = "nd-projection-radius";
+    roundingLabel.textContent = "Corner Radius";
+    const roundingInput = document.createElement("input");
+    roundingInput.className = "nd-field";
+    roundingInput.type = "number";
+    roundingInput.min = "0";
+    roundingInput.max = "100";
+    roundingInput.value = String(this.rounding);
+    const updateRounding = (value: number) => {
+      if (!Number.isFinite(value)) return;
+      this.rounding = clampRounding(value);
+      this.layout();
+    };
+    const commitRounding = () => {
+      roundingInput.value = String(this.rounding);
+      this.saveRounding();
+    };
+    roundingInput.addEventListener("input", () => updateRounding(roundingInput.valueAsNumber));
+    roundingInput.addEventListener("change", commitRounding);
+    bindNumberDrag(roundingInput, 1, value => {
+      updateRounding(value);
+      commitRounding();
+    });
+    reset.addEventListener("click", () => {
+      this.quad = defaultQuad();
+      this.rounding = 0;
+      roundingInput.value = "0";
+      this.save();
+      this.saveRounding();
+      this.layout();
+    });
+    roundingLabel.append(roundingInput);
+    controls.append(roundingLabel, reset);
+    header.append(title, controls, close);
     this.message.className = "nd-projection-status";
     this.message.setAttribute("role", "status");
     this.panel.append(header, this.stage, this.message, resize);
@@ -271,17 +322,32 @@ export class NodeProjection {
   private layout() {
     const rect = this.stage.getBoundingClientRect();
     this.previewSize = { width: rect.width, height: rect.height };
-    if (rect.width > 0 && rect.height > 0) this.preview.style.transform = quadTransform(this.quad, rect.width, rect.height);
+    if (rect.width > 0 && rect.height > 0) this.layoutCanvas(this.preview, rect.width, rect.height);
     this.quad.forEach(({ x, y }, index) => {
       this.corners[index].style.left = `${x * 100}%`;
       this.corners[index].style.top = `${y * 100}%`;
     });
     const output = this.outputWindow;
-    if (output && this.outputCanvas) this.outputCanvas.style.transform = quadTransform(this.quad, Math.max(1, output.innerWidth), Math.max(1, output.innerHeight));
+    if (output && this.outputCanvas) this.layoutCanvas(this.outputCanvas, Math.max(1, output.innerWidth), Math.max(1, output.innerHeight));
+  }
+
+  private layoutCanvas(canvas: HTMLCanvasElement, width: number, height: number) {
+    canvas.style.transform = quadTransform(this.quad, width, height);
+    const amount = this.rounding / 100;
+    const shortSide = Math.min(width, height);
+    // Crop the longer side towards a square so full rounding yields a circle.
+    const insetX = (width - shortSide) * amount / 2;
+    const insetY = (height - shortSide) * amount / 2;
+    const radius = shortSide * amount / 2;
+    canvas.style.clipPath = amount ? `inset(${insetY}px ${insetX}px round ${radius}px)` : "";
   }
 
   private save() {
     try { localStorage.setItem(storageKey, JSON.stringify(this.quad)); } catch { /* The current calibration still works. */ }
+  }
+
+  private saveRounding() {
+    try { localStorage.setItem(roundingKey, String(this.rounding)); } catch { /* The current rounding still works. */ }
   }
 
   private resizeTo(width: number) {

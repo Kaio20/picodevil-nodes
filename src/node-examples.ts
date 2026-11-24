@@ -71,17 +71,18 @@ export function createExampleGraph(name: ExampleName): Graph {
       break;
     }
     case "picodevil": {
-      const background = image("fit", 1, 0, media(0, 0, "text:_picodevil_"), { mode: "tile" });
-      const backgroundFont = image("textStyle", 2, 0, background, { family: "BIZ UDPMincho" });
+      const background = add("text", 0, 0, { content: " picodevil " });
+      const backgroundFont = image("textStyle", 1, 0, background, { family: "BIZ UDPMincho" });
+      const smallText = image("textStyle", 2, 0, backgroundFont, { size: 48 });
       const turns = rate("slow", 2, 1, waveform("saw", 1, 1), 100);
-      const rotation = add("rotate", 3, 0, {}, { image: backgroundFont, value: turns });
-      const smallText = image("textStyle", 4, 0, rotation, { size: 48 });
-      output(6, 0, image("scale", 5, 0, smallText, { value: 2 }));
+      const tiled = image("fit", 3, 0, smallText, { mode: "tile" });
+      const rotation = add("rotate", 4, 0, {}, { image: tiled, value: turns });
+      output(6, 0, image("scale", 5, 0, rotation, { value: 2 }));
       const feedback = image("alpha", 4, 1, media(3, 1, "prev"), { value: 0.9975 });
       const pixels = image("pixelate", 5, 1, feedback, { value: 8 });
       const hue = rate("fast", 5, 2, number(4, 2, "-.01 .01"), 10);
       output(7, 1, add("hue", 6, 1, {}, { image: pixels, value: hue }));
-      const text = image("textStyle", 1, 3, media(0, 3, "text:picodevil"), { family: "Shantell Sans" });
+      const text = image("textStyle", 1, 3, add("text", 0, 3, { content: "picodevil" }), { family: "Shantell Sans" });
       const wave = waveform("sine", 0, 4);
       const range = (column: number, row: number, source: GraphNode, min: number, max: number) =>
         add("range", column, row, { min, max }, { signal: source });

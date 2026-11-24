@@ -494,12 +494,14 @@ body {
 }
 
 /* Per-tab .active overrides (layout differs from the default block pane) */
-#tab-videos.active {
+#tab-videos.active,
+#tab-textures.active {
   display: flex !important;
   flex-direction: column;
 }
 
-#tab-videos {
+#tab-videos,
+#tab-textures {
   padding: 0 !important;
   /* Never scroll the videos tab horizontally — content wraps instead. (overflow-y:auto
      from .tab-content would otherwise make overflow-x compute to auto and show a bar.) */
@@ -609,6 +611,39 @@ body {
 
 .add-bar .pd-btn {
   font-size: 16px;
+}
+
+.texture-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.texture-controls select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#tab-textures .thumbs-grid {
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+}
+
+#tab-textures .thumb-cell {
+  padding-bottom: 100%;
+}
+
+:is(#tab-textures .thumb-cell, .texture-drag-clone.thumb-cell):has(img) {
+  background: conic-gradient(#555 25%, #626262 0 50%, #555 0 75%, #626262 0) 0 0 / 16px 16px;
+}
+
+:is(#tab-textures .thumb-cell, .texture-drag-clone.thumb-cell) img {
+  object-fit: contain;
+}
+
+:is(#tab-textures, .texture-drag-clone) .thumb-bar {
+  background: linear-gradient(transparent, rgb(0 0 0 / 65%));
 }
 
 /* min-height:0 lets this flex child shrink below its content so only the list
@@ -751,6 +786,7 @@ body {
   position: fixed;
   z-index: 1000;
   margin: 0;
+  padding: 0;
   pointer-events: none;
   opacity: 0.92;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
@@ -1156,8 +1192,13 @@ body {
   cursor: pointer;
 }
 
-.ref-nav-link:hover {
+.ref-nav-link:hover,
+.ref-nav-link[aria-current="location"] {
   color: var(--fg-bright);
+}
+
+.ref-nav-link[aria-current="location"] {
+  background: var(--bg-btn-alt);
 }
 
 .ref-detail-head {

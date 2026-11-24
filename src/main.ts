@@ -348,6 +348,7 @@ const nodeEditor = new NodeEditor(nodeHost, {
     }
   },
   showCode: () => showWorkspace("code"),
+  openReference: entry => sidebarControls.openReference(entry),
   openOutput: () => projection.open(),
   bindProjectionToggle: button => projection.bindToggle(button),
 });
@@ -360,7 +361,7 @@ window.pdSetCode = (code, evaluate) => { showWorkspace("code"); setCode(code, ev
 const insertCode = window.pdInsertAtCursor;
 window.pdInsertAtCursor = name => {
   const medium = mode === "nodes" ? resolveMedia(name) : undefined;
-  if (medium) nodeEditor.addMedia(medium.id);
+  if (medium) nodeEditor.addMedia(medium);
   else if (mode === "code") insertCode(name);
 };
 
@@ -371,7 +372,7 @@ function measureSidebar() {
 }
 new ResizeObserver(measureSidebar).observe(sidebar);
 new MutationObserver(measureSidebar).observe(sidebar, { attributes: true, attributeFilter: ["class"] });
-setupSidebar(!urlState && !savedNodes, mode === "nodes" ? "videos" : undefined, example => {
+const sidebarControls = setupSidebar(!urlState && !savedNodes, mode === "nodes" ? "videos" : undefined, example => {
   showWorkspace("nodes");
   nodeEditor.loadExample(createExampleGraph(example.name));
   void loadExampleMedia(example.media ?? []);

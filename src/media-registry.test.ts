@@ -26,6 +26,22 @@ function waitFor(cond: () => boolean | undefined, timeout = 3000): Promise<void>
   });
 }
 
+it("preserves transparency in thumbnails for textures", async () => {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 2;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillRect(0, 0, 1, 1);
+  const texture = addMedia(canvas.toDataURL(), "transparent", "image", "textures");
+  await waitFor(() => !!texture.thumbnail);
+
+  const preview = new Image();
+  preview.src = texture.thumbnail!;
+  await preview.decode();
+  ctx.clearRect(0, 0, 2, 2);
+  ctx.drawImage(preview, 0, 0);
+  expect(ctx.getImageData(1, 1, 1, 1).data[3]).toBe(0);
+});
+
 describe("moveMediaBefore", () => {
   const names = () => getAllEntries().map(e => e.name);
   const seed = () => { addMedia("http://x/a.mp4", "a"); addMedia("http://x/b.mp4", "b"); addMedia("http://x/c.mp4", "c"); };
@@ -165,6 +181,21 @@ describe("media registry", () => {
     expect(entry!.url).toBe("http://localhost:3456/videos/2_ejohiU8h0.mp4");
     // Without extension — the key point
     expect(resolveMedia("washingmachine.mp4")).toBeUndefined();
+  });
+
+  it("imports and clears textures independently of the Videos collection", () => {
+    const payload = JSON.stringify([{
+      id: "shared-id", name: "mask", url: "/textures/light-masks/circle_a.png",
+      type: "image", thumbnail: "/textures/light-masks/circle_a.png",
+    }]);
+    importAll(payload, "videos");
+    importAll(payload, "textures");
+    const [videoTabEntry] = getAllEntries("videos");
+    const [texture] = getAllEntries("textures");
+    expect(texture.id).not.toBe(videoTabEntry.id);
+    expect(JSON.parse(exportAll("textures")).map((entry: { name: string }) => entry.name)).toEqual([texture.name]);
+    clearAll("textures");
+    expect(getAllEntries()).toEqual([videoTabEntry]);
   });
 
   it("generates thumbnail for image", async () => {

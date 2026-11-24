@@ -1,5 +1,6 @@
 import type { TileSource } from './renderer-interface';
 import { warn } from './warnings';
+import { gradientPixels, gradientResolution, type Gradient } from './gradient';
 
 type SourceElement = HTMLVideoElement | HTMLImageElement;
 
@@ -19,6 +20,7 @@ type SourceElement = HTMLVideoElement | HTMLImageElement;
 // the cache without bound. 4096 distinct colours on screen is already implausible,
 // so the LRU cap never bites real patterns; it just stops the slow leak.
 const MAX_COLOR_TEXTURES = 4096;
+const MAX_GRADIENT_TEXTURES = 64;
 
 // Make a scratch canvas for the screen-capture CPU copy. Prefers OffscreenCanvas,
 // but older Safari / embedded webviews lack it — fall back to a regular <canvas>
@@ -48,6 +50,7 @@ export class TextureCache {
   private uploaded = new WeakSet<SourceElement>();
   /** Colour textures, keyed by "r,g,b" integer string. Insertion-ordered for LRU. */
   private readonly colorTextures = new Map<string, WebGLTexture>();
+  private readonly gradientTextures = new Map<Gradient, WebGLTexture>();
   private canvasTextures = new WeakMap<HTMLCanvasElement, WebGLTexture>();
   private uploadedCanvases = new WeakSet<HTMLCanvasElement>();
 
@@ -62,6 +65,9 @@ export class TextureCache {
   get(source: TileSource): WebGLTexture | null {
     if (source.kind === 'color') {
       return this.getColor(source.r, source.g, source.b);
+    }
+    if (source.kind === 'gradient') {
+      return this.getGradient(source.gradient);
     }
     if (source.kind === 'text' || source.kind === 'qr') {
       const { canvas } = source;
@@ -154,6 +160,7 @@ export class TextureCache {
    */
   forget(): void {
     this.colorTextures.clear();
+    this.gradientTextures.clear();
     // elementTextures/uploaded are Weak (can't iterate to delete) — individual GL
     // textures are freed by release() during normal churn; here we just swap in
     // fresh collections.
@@ -169,8 +176,37 @@ export class TextureCache {
     const { gl } = this;
     if (!gl.isContextLost()) {
       for (const tex of this.colorTextures.values()) gl.deleteTexture(tex);
+      for (const tex of this.gradientTextures.values()) gl.deleteTexture(tex);
     }
     this.forget();
+  }
+
+  trimGradients(): void {
+    for (const [gradient, texture] of this.gradientTextures) {
+      if (this.gradientTextures.size <= MAX_GRADIENT_TEXTURES) break;
+      this.gl.deleteTexture(texture);
+      this.gradientTextures.delete(gradient);
+    }
+  }
+
+  private getGradient(gradient: Gradient): WebGLTexture {
+    const existing = this.gradientTextures.get(gradient);
+    if (existing) {
+      this.gradientTextures.delete(gradient);
+      this.gradientTextures.set(gradient, existing);
+      return existing;
+    }
+    const { gl } = this;
+    const texture = this.createTexture();
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    if (gradient.space === 'RGB' && gradient.interpolation === 'Constant') {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gradientResolution, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      gradientPixels(gradient, gradientResolution));
+    this.gradientTextures.set(gradient, texture);
+    return texture;
   }
 
   private getColor(r: number, g: number, b: number): WebGLTexture {

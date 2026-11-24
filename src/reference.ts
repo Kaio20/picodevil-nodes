@@ -1,26 +1,40 @@
 import data from "virtual:reference-data";
 import { renderReferenceMarkdown } from "./reference-markdown";
 import { highlightJsToHtml, injectHighlightCss } from "./highlight-code";
-import { referenceNode } from "./node-graph";
+import { definition, nodeKinds, referenceNode, type NodeKind, type NodeMode } from "./node-graph";
 import { attachNodeDrag } from "./node-sidebar-drag";
 
-interface RefEntry {
-  name: string;
-  description: string;
-  params: string[];
-  examples: string[];
-  aliases: string[];
-  isMethod: boolean;
-}
+export type RefEntry = (typeof data)[number]["entries"][number] & { node?: NodeKind };
 
 interface RefCategory {
   name: string;
   entries: RefEntry[];
 }
 
+const nodeEntries = new Map<NodeKind, RefEntry>();
+for (const kind of nodeKinds) {
+  const { label, help, reference, modes } = definition(kind);
+  if (help && !reference && !modes) {
+    nodeEntries.set(kind, { name: label, description: help, params: [], examples: [], aliases: [], isMethod: false, node: kind });
+  }
+}
+const categories: RefCategory[] = [...data, { name: "Nodes", entries: [...nodeEntries.values()] }];
+const entries = data.flatMap(category => category.entries);
+
+export function referenceForNode(kind: NodeKind, mode?: NodeMode) {
+  const def = definition(kind);
+  let entry = nodeEntries.get(kind);
+  for (const name of mode?.reference ?? def.reference ?? []) {
+    entry = entries.find(item => item.name === name) ?? entries.find(item => item.aliases.includes(name));
+    if (entry) break;
+  }
+  const description = mode?.help ?? def.help ?? entry?.description.split(/\r?\n\s*\r?\n/, 1)[0];
+  const summary = description?.replace(/`|\*\*/g, "").replace(/\s+/g, " ").trim();
+  return { entry, summary };
+}
+
 export function setupReference(container: HTMLElement) {
   injectHighlightCss();
-  const categories = data as RefCategory[];
 
   const wrap = document.createElement("div");
   wrap.className = "ref-wrap";
@@ -41,9 +55,25 @@ export function setupReference(container: HTMLElement) {
   detail.className = "ref-detail";
 
   // Track all elements for filtering
-  const filterItems: { query: string; navLink: HTMLElement; detailEntry: HTMLElement; cat: string }[] = [];
+  const filterItems = new Map<RefEntry, { query: string; navLink: HTMLElement; detailEntry: HTMLElement; cat: string }>();
   const catNavHeads = new Map<string, HTMLElement>();
   const catDetailHeads = new Map<string, HTMLElement>();
+  let current: HTMLElement | undefined;
+
+  const show = (entry: RefEntry, behavior: ScrollBehavior = "instant") => {
+    const item = filterItems.get(entry);
+    if (!item) return;
+    const { detailEntry, navLink } = item;
+    if (detailEntry.style.display === "none") {
+      searchBox.value = "";
+      filter();
+    }
+    current?.removeAttribute("aria-current");
+    current = navLink;
+    current.setAttribute("aria-current", "location");
+    const top = detail.scrollTop + detailEntry.getBoundingClientRect().top - detail.getBoundingClientRect().top;
+    detail.scrollTo({ top: top - 8, behavior });
+  };
 
   for (const cat of categories) {
     const navHead = document.createElement("div");
@@ -60,16 +90,16 @@ export function setupReference(container: HTMLElement) {
     catDetailHeads.set(cat.name, detailHead);
 
     for (const entry of cat.entries) {
-      const entryId = `ref-${entry.name}`;
+      const entryId = entry.node ? `ref-node-${entry.node}` : `ref-${entry.name}`;
+      const displayName = entry.node ? entry.name : `${entry.name}()`;
 
       const navLink = document.createElement("a");
-      navLink.textContent = `${entry.name}()`;
+      navLink.textContent = displayName;
       navLink.href = `#${entryId}`;
       navLink.className = "ref-nav-link";
       navLink.addEventListener("click", (e) => {
         e.preventDefault();
-        const target = detail.querySelector(`#${entryId}`);
-        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        show(entry, "smooth");
       });
       nav.appendChild(navLink);
 
@@ -77,11 +107,11 @@ export function setupReference(container: HTMLElement) {
       entryEl.id = entryId;
       entryEl.className = "ref-entry";
 
-      const sig = `${entry.name}(${entry.params.length ? "..." : ""})`;
+      const sig = entry.params.length ? `${entry.name}(...)` : displayName;
       const nameEl = document.createElement("div");
       nameEl.className = "ref-entry-name";
       nameEl.textContent = sig;
-      const drop = referenceNode(entry.name, entry.aliases);
+      const drop = entry.node ? { kind: entry.node } : referenceNode(entry.name, entry.aliases);
       if (drop) {
         attachNodeDrag(navLink, drop);
         attachNodeDrag(nameEl, drop);
@@ -120,18 +150,17 @@ export function setupReference(container: HTMLElement) {
 
       detail.appendChild(entryEl);
 
-      const displayName = `${entry.name}(`;
       const queryText = [displayName, entry.name, ...entry.aliases, entry.description].join(" ").toLowerCase();
-      filterItems.push({ query: queryText, navLink, detailEntry: entryEl, cat: cat.name });
+      filterItems.set(entry, { query: queryText, navLink, detailEntry: entryEl, cat: cat.name });
     }
   }
 
   // Filter logic
-  searchBox.addEventListener("input", () => {
+  function filter() {
     const term = searchBox.value.toLowerCase().trim();
     const visibleCats = new Set<string>();
 
-    for (const item of filterItems) {
+    for (const item of filterItems.values()) {
       const match = !term || item.query.includes(term);
       item.navLink.style.display = match ? "" : "none";
       item.detailEntry.style.display = match ? "" : "none";
@@ -144,11 +173,13 @@ export function setupReference(container: HTMLElement) {
     for (const [catName, el] of catDetailHeads) {
       el.style.display = visibleCats.has(catName) ? "" : "none";
     }
-  });
+  }
+  searchBox.addEventListener("input", filter);
 
   navCol.appendChild(nav);
   wrap.appendChild(navCol);
   wrap.appendChild(detail);
   container.innerHTML = "";
   container.appendChild(wrap);
+  return show;
 }

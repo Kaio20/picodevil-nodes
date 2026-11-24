@@ -6,7 +6,7 @@ import type { MediaEntry } from "./media-registry";
  * device-specific) and live in localStorage instead.
  */
 export type UrlMediaEntry = Pick<MediaEntry, "id" | "name" | "url" | "type"> &
-  Partial<Pick<MediaEntry, "duration" | "streamKind" | "deviceId" | "thumbnail">>;
+  Partial<Pick<MediaEntry, "duration" | "streamKind" | "deviceId" | "thumbnail" | "collection">>;
 
 export type FftConfig = { bins: number; smooth: number; cutoff: number; scale: number };
 type UrlState = { v: number; code: string; media: UrlMediaEntry[]; fft?: FftConfig };
@@ -38,6 +38,7 @@ function stripEntry(e: MediaEntry): UrlMediaEntry {
     name: e.name,
     url: e.url,
     type: e.type,
+    ...(e.collection ? { collection: e.collection } : {}),
     ...(e.duration != null ? { duration: e.duration } : {}),
     ...(e.streamKind != null ? { streamKind: e.streamKind } : {}),
     ...(e.deviceId != null ? { deviceId: e.deviceId } : {}),

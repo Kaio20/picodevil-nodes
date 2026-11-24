@@ -1,4 +1,4 @@
-import { addStream, removeMedia, updateEntry, resolveMedia, getAllEntries, setOnChange } from "./media-registry";
+import { addStream, removeMedia, updateEntry, resolveMedia, getAllEntries, type MediaCollection } from "./media-registry";
 import { warn } from "./warnings";
 import { describeMediaError } from "./media-errors";
 
@@ -34,7 +34,7 @@ async function makeVideoEl(stream: MediaStream): Promise<HTMLVideoElement> {
   return el;
 }
 
-export async function startWebcam(name?: string, deviceId?: string): Promise<string> {
+export async function startWebcam(name?: string, deviceId?: string, collection?: MediaCollection): Promise<string> {
   const constraints: MediaStreamConstraints = {
     video: deviceId ? { deviceId: { exact: deviceId } } : true,
   };
@@ -46,7 +46,7 @@ export async function startWebcam(name?: string, deviceId?: string): Promise<str
 
   // Register in media registry if not already there
   let entry = name ? resolveMedia(name) : undefined;
-  const finalName = entry ? entry.name : addStream("webcam", name, actualDeviceId).name;
+  const finalName = entry ? entry.name : addStream("webcam", name, actualDeviceId, collection).name;
 
   if (entry) {
     // Update deviceId if it changed
@@ -72,11 +72,11 @@ export async function startWebcam(name?: string, deviceId?: string): Promise<str
   return finalName;
 }
 
-export async function startScreenCapture(name?: string): Promise<string> {
+export async function startScreenCapture(name?: string, collection?: MediaCollection): Promise<string> {
   const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
   let entry = name ? resolveMedia(name) : undefined;
-  const finalName = entry ? entry.name : addStream("screen", name).name;
+  const finalName = entry ? entry.name : addStream("screen", name, undefined, collection).name;
 
   // Stop any existing stream with this name
   if (streams.has(finalName)) {

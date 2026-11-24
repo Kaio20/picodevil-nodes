@@ -2,11 +2,12 @@ import { AUTO_PREFIX, type Renderer, type TileParams, type TileSource } from './
 import { ladderStep } from './modulate-sizing';
 import { TextureCache } from './texture-cache';
 import { warn } from './warnings';
+import { gradientResolution } from './gradient';
 import {
   compileInto, OP_FLOATS, MAX_OPS,
   OP_SAMPLE, OP_BARREL, OP_PIXELATE, OP_WRAP,
   OP_CONTRAST, OP_BRIGHTNESS, OP_COLOR_OKLAB, OP_ALPHA,
-  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE,
+  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE, OP_LUMA_TO_ALPHA,
 } from './effect-compiler';
 
 // ---------------------------------------------------------------------------
@@ -212,6 +213,7 @@ out vec4 fragColor;
 #define OP_MODULATE    ${OP_MODULATE}
 #define OP_SMEAR       ${OP_SMEAR}
 #define OP_VIGNETTE    ${OP_VIGNETTE}
+#define OP_LUMA_TO_ALPHA ${OP_LUMA_TO_ALPHA}
 #define OP_MATTE       ${OP_MATTE}
 
 vec4 sampleAny(int texIdx, vec2 uv) {
@@ -565,6 +567,10 @@ void main() {
                       sinA * lab.yz.x + cosA * lab.yz.y);
       }
       color.rgb = linear_to_srgb(oklab_to_linear_rgb(lab));
+    } else if (kind == OP_LUMA_TO_ALPHA) {
+      float luma = clamp(pdLum(color.rgb), 0.0, 1.0);
+      color.a *= a.y > 0.5 ? luma : 1.0 - luma;
+      color.rgb = vec3(a.y);
     } else if (kind == OP_MATTE) {
       // Alpha keyed off a matte texture's luminance (always an FBO: y-up texels).
       // a.y = texIdx, a.z = amount, a.w = space (0 uv / 1 tile / 2 screen)
@@ -777,6 +783,7 @@ type MediaTileSource = Exclude<TileSource, { kind: 'pattern' }>;
 
 function srcSize(source: MediaTileSource): [number, number] {
   if (source.kind === 'color') return [1, 1];
+  if (source.kind === 'gradient') return [gradientResolution, 1];
   if (source.kind === 'text' || source.kind === 'qr') return [source.canvas.width, source.canvas.height];
   if (source.kind === 'image') return [source.el.naturalWidth, source.el.naturalHeight];
   return [source.el.videoWidth, source.el.videoHeight];
@@ -805,6 +812,7 @@ interface DrawCommand {
   hueRot:      number;
   contrast:     number;
   brightness:   number;
+  lumaToAlpha?: TileParams['lumaToAlpha'];
   tintHue:      number;
   tintStrength: number;
   barrel:       number;
@@ -1317,6 +1325,7 @@ export class WebGLRenderer implements Renderer {
         hueRot:       p.huerot ?? 0,
         contrast:     p.contrast ?? 1,
         brightness:   p.brightness ?? 0,
+        lumaToAlpha:  p.lumaToAlpha,
         tintHue:      p.tintHue      ?? 0,
         tintStrength: p.tintStrength ?? 0,
         barrel:       p.barrel       ?? 0,
@@ -1383,6 +1392,7 @@ export class WebGLRenderer implements Renderer {
       hueRot:      p.huerot ?? 0,
       contrast:     p.contrast ?? 1,
       brightness:   p.brightness ?? 0,
+      lumaToAlpha:  p.lumaToAlpha,
       tintHue:      p.tintHue      ?? 0,
       tintStrength: p.tintStrength ?? 0,
       barrel:       p.barrel       ?? 0,
@@ -1403,6 +1413,7 @@ export class WebGLRenderer implements Renderer {
 
   endFrame(): void {
     this.flushPending();
+    this.texCache.trimGradients();
   }
 
   private flushPending(): void {
@@ -1493,6 +1504,7 @@ export class WebGLRenderer implements Renderer {
         pixUVStepY:   cmd.pixUVStepY,
         contrast:     cmd.contrast,
         brightness:   cmd.brightness,
+        lumaToAlpha:  cmd.lumaToAlpha,
         tintHue:      cmd.tintHue,
         tintStrength: cmd.tintStrength,
         barrel:       cmd.barrel,

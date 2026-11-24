@@ -51,6 +51,8 @@ PatternProto.pixelate = function (value?: any) {
   return pixelate(value, this);
 };
 
+const _greyMix = createMixParam("grey");
+
 /**
  * Desaturates the pattern. 0 = full colour (default), 1 = fully greyscale.
  * Values outside [0,1] adjust saturation: negative boosts chroma, >1 inverts chroma.
@@ -70,7 +72,6 @@ PatternProto.pixelate = function (value?: any) {
  * // boosted saturation
  * $: video("clip.mp4").grey(-0.5)
  */
-const _greyMix = createMixParam("grey");
 PatternProto.grey = function (value?: any) {
   if (value === undefined) value = 1;
   return _greyMix(value, this);
@@ -138,6 +139,18 @@ export const contrast = createMixParam("contrast");
  */
 export const brightness = createMixParam("brightness");
 PatternProto.bright = PatternProto.brightness; // alias, like gray → grey
+
+/**
+ * Converts the image's brightness to opacity for a black or white overlay.
+ * `white` removes white and leaves black. `black` removes black and leaves white.
+ * Gray becomes partially transparent, and existing transparency is preserved.
+ *
+ * @param {string | Pattern} value `white` or `black`, the color to make transparent
+ * @returns {Pattern} pattern with brightness converted to opacity
+ * @example
+ * $: s('clip.mp4').lumaToAlpha('white')
+ */
+export const lumaToAlpha = createMixParam("lumaToAlpha");
 
 const _tintHue      = createMixParam("tintHue");
 const _tintStrength = createMixParam("tintStrength");

@@ -2,10 +2,11 @@ import { Pattern, pure, reify, sine, cosine, saw, tri, stack } from "@strudel/co
 import { mini } from "@strudel/mini";
 import { color } from "./color-pattern";
 import { s } from "./screen-pattern";
+import { text } from "./text-pattern";
 import { choose, rand } from "./event-random";
 import { stackN } from "./grid-stack";
 import { fft, previewFft } from "./fft-audio";
-import { resolveMedia, resolveMediaId } from "./media-registry";
+import { isTexture, resolveMedia, resolveMediaId } from "./media-registry";
 import { resolveUrl } from "./server-config";
 import { CYCLES_PER_SECOND, getRuntimeCps, setRuntimeCps } from "./config";
 import { CpsController } from "./cps-controller";
@@ -15,7 +16,8 @@ import { WebGLRenderer } from "./webgl-renderer";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { hashStr, withLayoutCounter } from "./layout-counter";
 import { collectScreens, getNamedScreenIndices, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
-import { fftBands, inputsFor, modeFor, previewType, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
+import { fftBands, inputsFor, isRenderable, modeFor, previewType, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
+import { gradientPixels, gradientResolution, gradientSampler, isGradient, rgbHex, type Gradient } from "./gradient";
 import "./index-patterns";
 import "./shuffle-stack";
 
@@ -49,10 +51,11 @@ function buildValues(graph: Graph, preview: boolean) {
   const values = new Map<string, Value>();
   const visiting = new Set<string>();
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
-  const incoming = new Map(graph.edges.map(edge => [edge.to + ":" + edge.input, edge.from]));
+  const incoming = new Map(graph.edges.map(edge => [edge.to + ":" + edge.input, edge]));
   const setters = new Map(graph.nodes.filter(node => node.kind === "set").map(node => [node.data.variable, node]));
-  const read = (id: string): Value => {
-    const cached = values.get(id);
+  const read = (id: string, output?: string): Value => {
+    const key = JSON.stringify([id, output]);
+    const cached = values.get(key);
     if (cached !== undefined) return cached;
     const node = nodes.get(id);
     if (!node) throw new Error("A connected node is missing.");
@@ -61,13 +64,13 @@ function buildValues(graph: Graph, preview: boolean) {
     try {
       const inputs = Object.fromEntries(inputsFor(graph, node).flatMap(socket => {
         const source = incoming.get(node.id + ":" + socket.id);
-        const value = source ? read(source) : node.data[socket.id] ?? socket.default;
+        const value = source ? read(source.from, source.output) : node.data[socket.id] ?? socket.default;
         if (value !== undefined) return [[socket.id, value] as const];
         if (socket.optional) return [];
         throw new Error(`${socket.label} needs a connection.`);
       }));
-      const value = withLayoutCounter(hashStr(node.id), () => buildNode(node, inputs, graph, preview, setters, read));
-      values.set(id, value);
+      const value = withLayoutCounter(hashStr(node.id), () => buildNode(node, inputs, graph, preview, setters, read, output));
+      values.set(key, value);
       return value;
     } finally { visiting.delete(id); }
   };
@@ -76,18 +79,24 @@ function buildValues(graph: Graph, preview: boolean) {
 
 function buildNode(
   node: GraphNode, input: Record<string, Value>, graph: Graph, preview: boolean,
-  setters: Map<Literal, GraphNode>, read: (id: string) => Value,
+  setters: Map<Literal, GraphNode>, read: (id: string) => Value, output?: string,
 ): Value {
   const image = input.image as Pattern;
   const mode = modeFor(node)?.id;
   switch (node.kind) {
-    case "media": {
+    case "media":
+    case "texture": {
       const mediaId = String(node.data.media ?? "");
-      const medium = resolveMediaId(mediaId);
-      if (!medium || medium.unavailable) throw new Error("Choose an available medium.");
-      // Resolve by ID at query time so renaming the clip also updates the live graph.
-      return pure(mediaId).fmap(() => {
+      const texture = node.kind === "texture";
+      const resolveSource = () => {
         const entry = resolveMediaId(mediaId);
+        return entry && (!texture || isTexture(entry)) ? entry : undefined;
+      };
+      const medium = resolveSource();
+      if (!medium || medium.unavailable) throw new Error(texture ? "Choose an available texture." : "Choose an available medium.");
+      // Resolve by ID at query time so renaming the source also updates the live graph.
+      return pure(mediaId).fmap(() => {
+        const entry = resolveSource();
         return entry ? { _type: entry.type, src: entry.name, begin: 0, end: 1 } : { _type: "color", color: "black" };
       });
     }
@@ -98,6 +107,19 @@ function buildNode(
       return s(expression) as Pattern;
     }
     case "color": return color(String(input.pattern)) as Pattern;
+    case "colorRamp": {
+      if (!isGradient(input.gradient)) throw new Error("Choose a valid gradient.");
+      if (output === "gradient") return input.gradient;
+      const sample = gradientSampler(input.gradient);
+      return reify(input.factor).fmap((factor: unknown) => {
+        const rgba = sample(Number(factor));
+        return output === "alpha" ? rgba[3] : { _type: "color", color: rgbHex(rgba), colorAlpha: rgba[3] };
+      });
+    }
+    case "gradientImage": {
+      if (!isGradient(input.gradient)) throw new Error("Choose a valid gradient.");
+      return pure({ _type: "gradient", gradient: input.gradient });
+    }
     case "waveform": return waveforms[mode ?? "sine"];
     case "rand": return rand;
     case "fft": {
@@ -155,6 +177,7 @@ function buildNode(
     case "alpha": return call(image, "alpha", input.value);
     case "hue": return call(image, "huerot", input.value);
     case "grey": return call(image, "grey", input.value);
+    case "lumaToAlpha": return call(image, "lumaToAlpha", mode);
     case "brightness": return call(image, "brightness", input.value);
     case "contrast": return call(image, "contrast", input.value);
     case "pixelate": return call(image, "pixelate", input.value);
@@ -162,6 +185,7 @@ function buildNode(
     case "barrel": return call(image, "barrel", input.value);
     case "modulate": return call(image, "modulate", input.texture, input.value);
     case "matte": return call(image, "matte", input.texture, input.value);
+    case "text": return text(input.content as Parameters<typeof text>[0]) as Pattern;
     case "textStyle": {
       let styled = image;
       if (input.family !== undefined) styled = call(styled, "font", input.family);
@@ -206,7 +230,7 @@ function compile(graph: Graph, previewIds?: readonly string[]) {
         if (!node) continue;
         try {
           const value = read(id);
-          if (previewType(graph, node) === "visual") {
+          if (isRenderable(previewType(graph, node))) {
             const layer = `__auto_preview_${id}`;
             registerAutoHidden(layer, value as Pattern);
             previews.set(id, { layer });
@@ -233,6 +257,7 @@ export interface PreviewTarget {
   canvas?: HTMLCanvasElement;
   status: HTMLElement;
   samples: number[];
+  gradient?: Gradient;
 }
 
 export class NodePreviews {
@@ -342,6 +367,15 @@ export class NodePreviews {
     }
     const dynamic = preview.value instanceof Pattern;
     const value = dynamic ? (preview.value as Pattern).queryArc(cycle, cycle)[0]?.value : preview.value;
+    if (isGradient(value) && target.canvas) {
+      if (target.gradient !== value) {
+        const pixels = gradientPixels(value, gradientResolution);
+        target.canvas.getContext("2d")!.putImageData(new ImageData(pixels, gradientResolution, 1), 0, 0);
+        target.gradient = value;
+      }
+      target.status.textContent = "";
+      return;
+    }
     target.status.textContent = typeof value === "number" ? String(Number(value.toFixed(3))) : String(value ?? "—");
     if (!target.canvas) return;
     const g = target.canvas.getContext("2d")!;

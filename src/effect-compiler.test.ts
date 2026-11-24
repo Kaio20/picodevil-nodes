@@ -3,7 +3,7 @@ import {
   compile,
   OP_SAMPLE, OP_BARREL, OP_PIXELATE, OP_WRAP,
   OP_CONTRAST, OP_BRIGHTNESS, OP_COLOR_OKLAB, OP_ALPHA,
-  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE,
+  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE, OP_LUMA_TO_ALPHA,
   OP_FLOATS, MAX_OPS,
   vignetteBand,
   type EffectInputs,
@@ -198,7 +198,7 @@ describe("effect-compiler", () => {
       expect(ops[7]).toBe(0); // b.w reserved
     });
 
-    it("MAX_OPS covers the fully-loaded chain including MODULATE + MATTE", () => {
+    it("MAX_OPS covers the fully-loaded chain", () => {
       const e: EffectInputs = {
         texIndex: 2,
         alpha: 0.5,
@@ -210,6 +210,7 @@ describe("effect-compiler", () => {
         tintHue: 0.3, tintStrength: 0.6,
         barrel: 0.2,
         vignette: 1,
+        lumaToAlpha: "white",
         cropOffX: 0.1, cropOffY: 0.1,
         cropSizeX: 0.8, cropSizeY: 0.8,
         tileMode: 1,
@@ -221,7 +222,7 @@ describe("effect-compiler", () => {
       const ks = kinds(compile(e));
       expect(ks).toEqual([
         OP_BARREL, OP_MODULATE, OP_PIXELATE, OP_WRAP, OP_SAMPLE,
-        OP_BRIGHTNESS, OP_CONTRAST, OP_COLOR_OKLAB, OP_MATTE, OP_VIGNETTE, OP_ALPHA,
+        OP_BRIGHTNESS, OP_CONTRAST, OP_COLOR_OKLAB, OP_LUMA_TO_ALPHA, OP_MATTE, OP_VIGNETTE, OP_ALPHA,
       ]);
       expect(ks.length).toBe(MAX_OPS);
     });

@@ -179,6 +179,8 @@ export async function probeHealth(url?: string): Promise<HealthResponse | null> 
  */
 export function resolveUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return pathOrUrl;
+  // Bundled textures are served by the app, even when a media server is configured.
+  if (pathOrUrl.startsWith("/textures/")) return pathOrUrl;
   // Has a scheme? (rfc3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":")
   if (/^[a-z][a-z0-9+.-]*:/i.test(pathOrUrl)) return pathOrUrl;
   if (pathOrUrl.startsWith("//")) return pathOrUrl;

@@ -1,4 +1,7 @@
+import type { Gradient } from './gradient';
+
 export type FitMode = "cover" | "contain" | "fill" | "none" | "tile" | "tilecenter";
+export type LumaKey = "white" | "black";
 
 /**
  * Shared prefix for every hidden FBO layer picodevil auto-registers (modulate
@@ -26,6 +29,7 @@ export type TileSource =
   | { kind: 'video' | 'stream'; el: HTMLVideoElement }
   | { kind: 'image'; el: HTMLImageElement }
   | { kind: 'color'; r: number; g: number; b: number }
+  | { kind: 'gradient'; gradient: Gradient }
   | { kind: 'pattern'; name: string }
   | { kind: 'text'; canvas: HTMLCanvasElement }
   | { kind: 'qr'; canvas: HTMLCanvasElement };
@@ -68,6 +72,8 @@ export interface TileParams {
   contrast: number;
   /** Brightness offset added after contrast: 0 = no change (default), positive = brighter, negative = darker. */
   brightness: number;
+  /** Which end of the brightness range becomes transparent. */
+  lumaToAlpha?: LumaKey;
   /** Tint hue target in [0,1] turns. */
   tintHue: number;
   /** Tint strength: 0 = no tint (default), 1 = full colorise, unclamped for hyper-saturation effects. */

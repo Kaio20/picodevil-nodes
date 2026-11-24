@@ -34,6 +34,12 @@ function solidCanvas(color: string): HTMLCanvasElement {
   return c;
 }
 
+it("multiplies the luma key by the source image's existing alpha", () => {
+  const source = { kind: 'text' as const, canvas: solidCanvas("rgba(128, 128, 128, 0.5)") };
+  const [, , , alpha] = readPixel(renderTile(makeTile({ source, lumaToAlpha: "black" })), 50, 50);
+  expect(alpha).toBe(64);
+});
+
 // ---------------------------------------------------------------------------
 // Contrast
 // ---------------------------------------------------------------------------

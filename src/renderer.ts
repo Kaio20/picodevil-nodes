@@ -719,6 +719,9 @@ export class FrameRenderer {
     if (ev._type === 'color') {
       const [r, g, b] = this.parseColor(ev.color);
       source = { kind: 'color', r, g, b };
+      alpha *= ev.colorAlpha ?? 1;
+    } else if (ev._type === 'gradient') {
+      source = { kind: 'gradient', gradient: ev.gradient };
     } else if (ev._type === 'image') {
       const key = `${screenIndex}:${eventIndex}`;
       const ns = this.feToNeeded.get(key);
@@ -765,7 +768,7 @@ export class FrameRenderer {
       cropy: ev.cropy ?? 0.5,
       cropw: ev.cropw ?? 1,
       croph: ev.croph ?? 1,
-      fit: ev.objectfit ?? (ev._type === 'text' ? 'none' : ev._type === 'qr' ? 'contain' : 'cover'),
+      fit: ev.objectfit ?? (ev._type === 'text' ? 'none' : ev._type === 'qr' ? 'contain' : ev._type === 'gradient' ? 'fill' : 'cover'),
       alpha,
       blend: ev.blend !== undefined ? String(ev.blend) : 'source-over',
       rotateZ,
@@ -778,6 +781,7 @@ export class FrameRenderer {
       huerot:     ev.huerot     !== undefined ? Number(ev.huerot)     : 0,
       contrast:      ev.contrast      !== undefined ? Number(ev.contrast)      : 1,
       brightness:    ev.brightness    !== undefined ? Number(ev.brightness)    : 0,
+      lumaToAlpha:   ev.lumaToAlpha === 'white' || ev.lumaToAlpha === 'black' ? ev.lumaToAlpha : undefined,
       tintHue:       ev.tintHue       !== undefined ? Number(ev.tintHue)       : 0,
       tintStrength:  ev.tintStrength  !== undefined ? Number(ev.tintStrength)  : 0,
       barrel:        ev.barrel        !== undefined ? Number(ev.barrel)        : 0,

@@ -3,12 +3,16 @@ import { MAX_UPLOAD_BYTES } from "./config";
 
 const THUMB_STORAGE_PREFIX = "picodevil:thumb:";
 
+export type MediaCollection = "videos" | "textures";
+
 export type MediaEntry = {
   /** Stable identity — survives renames, persisted to localStorage */
   id: string;
   name: string;
   url: string;
   type: "video" | "image" | "stream";
+  /** Missing on older media, which belong to Videos. */
+  collection?: MediaCollection;
   thumbnail?: string;
   /** Video duration in seconds, populated when metadata loads */
   duration?: number;
@@ -57,7 +61,7 @@ function save() {
  * Call this once at startup before any other registry operations.
  * @internal
  */
-export function initRegistry(entries: { id: string; name: string; url: string; type: MediaEntry["type"]; duration?: number; streamKind?: MediaEntry["streamKind"]; deviceId?: string; thumbnail?: string }[]) {
+export function initRegistry(entries: Pick<MediaEntry, "id" | "name" | "url" | "type" | "collection" | "duration" | "streamKind" | "deviceId" | "thumbnail">[]) {
   registry.length = 0;
   for (const entry of entries) {
     const migratedUrl = entry.url ? migrateLegacyServerUrl(entry.url) : entry.url;
@@ -151,22 +155,28 @@ function getEntryById(id: string): MediaEntry | undefined {
   return registry.find(e => e.id === id);
 }
 
-export function addMedia(url: string, name?: string, type?: "video" | "image"): MediaEntry {
+export function addMedia(
+  url: string, name?: string, type?: "video" | "image", collection: MediaCollection = "videos", thumbnail?: string,
+): MediaEntry {
   const baseName = name ?? deriveNameFromUrl(url);
   const finalName = uniqueName(baseName);
-  const entry: MediaEntry = { id: crypto.randomUUID(), name: finalName, url, type: type ?? guessType(url) };
+  const entry: MediaEntry = {
+    id: crypto.randomUUID(), name: finalName, url, type: type ?? guessType(url),
+    ...(collection === "textures" ? { collection } : {}),
+    ...(thumbnail ? { thumbnail } : {}),
+  };
   registry.push(entry);
   save();
-  if (!isYouTubeUrl(url)) generateThumbnail(entry);
+  if (!thumbnail && !isYouTubeUrl(url)) generateThumbnail(entry);
   return entry;
 }
 
-export function addStream(kind: "webcam" | "screen", name?: string, deviceId?: string): MediaEntry {
+export function addStream(kind: "webcam" | "screen", name?: string, deviceId?: string, collection: MediaCollection = "videos"): MediaEntry {
   const baseName = name ?? kind;
   const finalName = uniqueName(baseName);
   const entry: MediaEntry = {
     id: crypto.randomUUID(), name: finalName, url: "", type: "stream",
-    streamKind: kind, deviceId,
+    streamKind: kind, deviceId, ...(collection === "textures" ? { collection } : {}),
   };
   registry.push(entry);
   save();
@@ -243,24 +253,30 @@ export function resolveMediaId(id: string): MediaEntry | undefined {
   return registry.find(entry => entry.id === id);
 }
 
-export function getAllEntries(): MediaEntry[] {
-  return registry.slice();
+export function getAllEntries(collection?: MediaCollection): MediaEntry[] {
+  return collection ? registry.filter(entry => (entry.collection ?? "videos") === collection) : registry.slice();
 }
 
-export function exportAll(): string {
+export function isTexture(entry: MediaEntry) {
+  return entry.collection === "textures" && entry.type === "image";
+}
+
+export function exportAll(collection?: MediaCollection): string {
   return JSON.stringify(
-    registry.map(({ name, url, type }) => ({ name, url, type })),
+    getAllEntries(collection).map(({ name, url, type, collection }) => ({ name, url, type, collection })),
     null,
     2
   );
 }
 
-export function importAll(json: string) {
+export function importAll(json: string, collection?: MediaCollection) {
   const arr: MediaEntry[] = JSON.parse(json);
   for (const raw of arr) {
     if (raw.name && raw.url) {
       const name = uniqueName(raw.name);
-      const entry = { id: raw.id ?? crypto.randomUUID(), ...raw, name } as MediaEntry;
+      const id = raw.id && !getEntryById(raw.id) ? raw.id : crypto.randomUUID();
+      const entry: MediaEntry = { ...raw, id, name };
+      if (collection) entry.collection = collection === "textures" ? collection : undefined;
       registry.push(entry);
       // Generate a thumbnail now rather than only on the next reload (via
       // initRegistry). Same guard: skip blobs, streams, YouTube links, and any
@@ -283,8 +299,8 @@ export type SourceItem = { name?: string; url: string; type?: MediaEntry["type"]
  * deciding whether to even show an "add" affordance (e.g. the Defaults button).
  * @internal
  */
-export function missingFromServer(items: SourceItem[]): SourceItem[] {
-  const seen = new Set(registry.map(e => resolveUrl(e.url)));
+export function missingFromServer(items: SourceItem[], collection?: MediaCollection): SourceItem[] {
+  const seen = new Set(getAllEntries(collection).map(e => resolveUrl(e.url)));
   const missing: SourceItem[] = [];
   for (const item of items) {
     if (!item?.url) continue;
@@ -304,8 +320,8 @@ export function missingFromServer(items: SourceItem[]): SourceItem[] {
  * preserved. Returns the number of new entries actually added.
  * @internal
  */
-export function addFromServer(items: SourceItem[]): number {
-  const missing = missingFromServer(items);
+export function addFromServer(items: SourceItem[], collection?: MediaCollection): number {
+  const missing = missingFromServer(items, collection);
   for (const item of missing) {
     const finalName = uniqueName(item.name || deriveNameFromUrl(item.url));
     const entry: MediaEntry = {
@@ -313,6 +329,7 @@ export function addFromServer(items: SourceItem[]): number {
       name: finalName,
       url: item.url,
       type: item.type ?? guessType(item.url),
+      ...(collection === "textures" ? { collection } : {}),
     };
     if (item.thumbnail) {
       // Server pre-generated thumbnail. Resolve against the server URL now (same
@@ -380,9 +397,13 @@ export function loadImage(name: string, url: string): void {
   }
 }
 
-export function clearAll() {
-  for (const entry of registry) removeThumb(entry.id);
-  registry.length = 0;
+export function clearAll(collection?: MediaCollection) {
+  for (let i = registry.length - 1; i >= 0; i--) {
+    const entry = registry[i];
+    if (collection && (entry.collection ?? "videos") !== collection) continue;
+    removeThumb(entry.id);
+    registry.splice(i, 1);
+  }
   save();
 }
 
@@ -618,8 +639,7 @@ export function thumbSize(srcW: number, srcH: number, max = THUMB_MAX): { w: num
 
 function captureThumbnail(source: HTMLVideoElement | HTMLImageElement, entry: MediaEntry) {
   try {
-    // Capture at the source's native aspect ratio — no stretch. Each tab's
-    // .thumb-cell/.vid-thumb crops to fill via object-fit:cover.
+    // Preserve the source aspect ratio. The sidebar handles thumbnail fitting.
     const iw = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
     const ih = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight;
     const { w, h } = thumbSize(iw, ih);
@@ -628,7 +648,8 @@ function captureThumbnail(source: HTMLVideoElement | HTMLImageElement, entry: Me
     canvas.height = h;
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(source, 0, 0, w, h);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
+    const format = entry.collection === "textures" && entry.type === "image" ? "image/webp" : "image/jpeg";
+    const dataUrl = canvas.toDataURL(format, 0.72);
     entry.thumbnail = dataUrl;
     // Decoded a frame → it's playable; clear any stale unavailable flag.
     if (entry.unavailable) entry.unavailable = false;

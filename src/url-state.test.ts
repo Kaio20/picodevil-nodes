@@ -55,6 +55,16 @@ describe("hashLooksCorrupt", () => {
 });
 
 describe("encodeUrlState / decodeUrlState", () => {
+  it("keeps textures in their own collection in a shared session", () => {
+    const texture: MediaEntry = {
+      id: "texture-1", name: "mask", type: "image", collection: "textures",
+      url: "/textures/light-masks/circle_a.png", thumbnail: "/textures/light-masks/circle_a.png",
+    };
+    const decoded = decodeUrlState(encodeUrlState(SAMPLE_CODE, [...SAMPLE_MEDIA, texture]));
+    expect(decoded?.media.at(-1)).toEqual(texture);
+    expect(decoded?.media[1].collection).toBeUndefined();
+  });
+
   it("round-trips code and media", () => {
     const encoded = encodeUrlState(SAMPLE_CODE, SAMPLE_MEDIA);
     const decoded = decodeUrlState(encoded);

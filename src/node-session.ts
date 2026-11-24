@@ -1,4 +1,5 @@
-import { keepCompatibleEdges, MIN_GRAPH_ZOOM, nodeKinds, valueTypes, type Graph, type Literal, type NodeKind } from "./node-graph";
+import { keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, nodeKinds, outputType, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
+import { isGradient } from "./gradient";
 import type { GraphView } from "./node-editor";
 import type { FftConfig, UrlMediaEntry } from "./url-state";
 
@@ -16,8 +17,10 @@ function validGraph(graph: Graph | undefined): graph is Graph {
   return Boolean(graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges) && Array.isArray(graph.variables) &&
     graph.nodes.every(node => node && typeof node.id === "string" && nodeKinds.includes(node.kind) &&
       Number.isFinite(node.x) && Number.isFinite(node.y) && node.data && typeof node.data === "object" &&
-      Object.values(node.data).every(value => typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)))) &&
-    graph.edges.every(edge => edge && typeof edge.from === "string" && typeof edge.to === "string" && typeof edge.input === "string") &&
+      Object.values(node.data).every(value => typeof value === "string" || typeof value === "boolean" ||
+        (typeof value === "number" && Number.isFinite(value)) || isGradient(value))) &&
+    graph.edges.every(edge => edge && typeof edge.from === "string" && typeof edge.to === "string" && typeof edge.input === "string" &&
+      (edge.output === undefined || typeof edge.output === "string")) &&
     graph.variables.every(item => item && typeof item.id === "string" && typeof item.name === "string" && valueTypes.includes(item.type)));
 }
 
@@ -55,7 +58,21 @@ function restoreGraph(graph?: Graph): Graph | undefined {
     return remap && edge.input === remap.from ? { ...edge, input: remap.to } : edge;
   });
   const next = { ...graph, nodes, edges };
-  return validGraph(next) ? keepCompatibleEdges(next) : undefined;
+  if (!validGraph(next)) return;
+  if (!nodes.some(node => node.kind === "output")) {
+    const rightmost = nodes.reduce<GraphNode | undefined>((right, node) => !right || node.x > right.x ? node : right, undefined);
+    nodes.push(makeNode("output", rightmost ? rightmost.x + 230 : 330, rightmost?.y ?? 96));
+  }
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  next.edges = edges.map(edge => {
+    if (edge.input !== "image") return edge;
+    const target = byId.get(edge.to)?.kind;
+    if (target !== "textStyle" && target !== "fontAxis") return edge;
+    const source = byId.get(edge.from);
+    // Older text chains could include any visual node, including mixed media patterns.
+    return source && outputType(next, source, edge.output) === "visual" ? { ...edge, legacyTextInput: true } : edge;
+  });
+  return keepCompatibleEdges(next);
 }
 
 export function loadNodes(): NodeSession | undefined {

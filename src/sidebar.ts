@@ -1,4 +1,4 @@
-import { setupReference } from "./reference";
+import { setupReference, type RefEntry } from "./reference";
 import { setupMediaLoader } from "./media-loader";
 import { setupPerfPanel } from "./perf-panel";
 import { setupAudioTab } from "./audio-sidebar";
@@ -58,12 +58,13 @@ export function setupSidebar(isFreshSession: boolean, defaultTab: string | undef
     panel.style.width = saved.width + "px";
   }
 
-  toggle.addEventListener("click", () => {
-    const open = panel.classList.toggle("open");
+  const setOpen = (open: boolean) => {
+    panel.classList.toggle("open", open);
     toggle.classList.toggle("open", open);
     toggle.textContent = open ? "›" : "‹";
     saveState({ open });
-  });
+  };
+  toggle.addEventListener("click", () => setOpen(!panel.classList.contains("open")));
 
   // Drag left edge to resize
   handle.addEventListener("mousedown", (e) => {
@@ -86,9 +87,10 @@ export function setupSidebar(isFreshSession: boolean, defaultTab: string | undef
 
   // Populate tabs
   const refTab = document.getElementById("tab-reference");
-  if (refTab) setupReference(refTab);
+  const showReference = refTab && setupReference(refTab);
   const videosTab = document.getElementById("tab-videos");
-  if (videosTab) setupMediaLoader(videosTab, isFreshSession);
+  const texturesTab = document.getElementById("tab-textures");
+  if (videosTab) setupMediaLoader(videosTab, isFreshSession, texturesTab);
   const perfTab = document.getElementById("tab-perf");
   if (perfTab) setupPerfPanel(perfTab);
   const audioTab = document.getElementById("tab-audio");
@@ -100,27 +102,34 @@ export function setupSidebar(isFreshSession: boolean, defaultTab: string | undef
 
   // Tabs
   const tabs = panel.querySelectorAll<HTMLButtonElement>(".tabs button");
+  const contents = panel.querySelectorAll<HTMLElement>(".tab-content");
+  const setTab = (name: string) => {
+    tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
+    contents.forEach(content => content.classList.toggle("active", content.id === `tab-${name}`));
+    if (name === "videos" || name === "textures") {
+      document.getElementById(`tab-${name}`)?.dispatchEvent(new Event("media-tab-activate"));
+    }
+  };
 
   // Restore active tab, overriding the About default (index.html) when stored
   const startingTab = saved.tab ?? defaultTab;
-  if (startingTab) {
-    tabs.forEach((t) => t.classList.remove("active"));
-    panel.querySelectorAll<HTMLElement>(".tab-content").forEach((el) => el.classList.remove("active"));
-    tabs.forEach((t) => {
-      if (t.dataset.tab === startingTab) t.classList.add("active");
-    });
-    const tabEl = document.getElementById(`tab-${startingTab}`);
-    if (tabEl) tabEl.classList.add("active");
-  }
+  if (startingTab) setTab(startingTab);
 
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
-      tabs.forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      panel.querySelectorAll<HTMLElement>(".tab-content").forEach((el) => {
-        el.classList.toggle("active", el.id === `tab-${tab.dataset.tab}`);
-      });
+      if (!tab.dataset.tab) return;
+      setTab(tab.dataset.tab);
       saveState({ tab: tab.dataset.tab });
     });
   });
+
+  return {
+    openReference(entry: RefEntry) {
+      if (!showReference) return;
+      if (!panel.classList.contains("open")) setOpen(true);
+      setTab("reference");
+      saveState({ tab: "reference" });
+      showReference(entry);
+    },
+  };
 }
