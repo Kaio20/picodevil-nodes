@@ -1,6 +1,5 @@
 import { parse, type Font } from 'opentype.js';
 import { PAD, LINE_HEIGHT_FACTOR } from './text-render';
-import { FONT_AXES } from './font-list';
 
 const fontCache = new Map<string, Font>();
 const fontLoading = new Set<string>();
@@ -24,14 +23,6 @@ export function getOpentypeFont(srcUrl: string): Font | null {
       .catch(err => console.warn('[pd] opentype font load failed:', srcUrl, err));
   }
   return null;
-}
-
-/**
- * Recover the correct-case axis tag from a lowercase key.
- * fontAxis() normalises all tags to lowercase; custom axes need uppercase for opentype.js.
- */
-export function resolveAxisTag(family: string, lowTag: string): string {
-  return FONT_AXES[family]?.find(a => a.tag.toLowerCase() === lowTag)?.tag ?? lowTag;
 }
 
 /**

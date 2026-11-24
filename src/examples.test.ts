@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { setupExamples, autostartExamples, pickAutostartCode } from "./examples";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { setupExamples, examples, autostartExamples, pickAutostartCode } from "./examples";
+import { createExampleGraph } from "./node-examples";
+import { keepCompatibleEdges } from "./node-graph";
+import { compileLiveGraph } from "./node-runtime";
+import { initRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
 
 describe("autostart example selection", () => {
   it("includes only examples opted in with autostart:true, never the flashing colour grids", () => {
@@ -19,43 +23,39 @@ describe("autostart example selection", () => {
 });
 
 describe("examples list", () => {
-  let container: HTMLElement;
-  let calls: Array<[string, boolean | undefined]>;
-  let events: string[];
-
-  beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    calls = [];
-    events = [];
-    (window as any).pdSetCode = (code: string, evaluate?: boolean) => {
-      calls.push([code, evaluate]);
-      events.push("setCode");
-    };
-    (window as any).pdResetCps = () => { events.push("resetCps"); };
+  it("passes each clicked example to the graph loader", () => {
+    const container = document.createElement("div");
+    const onSelect = vi.fn();
+    setupExamples(container, onSelect);
+    container.querySelectorAll("button").forEach(button => button.click());
+    expect(onSelect.mock.calls).toEqual(examples.map(example => [example]));
   });
+});
 
-  afterEach(() => {
-    container.remove();
-    delete (window as any).pdSetCode;
-    delete (window as any).pdResetCps;
-  });
+describe("example graphs", () => {
+  const previous = snapshotRegistry();
+  afterEach(() => restoreRegistry(previous));
 
-  it("clicking an example loads AND evaluates it", () => {
-    setupExamples(container);
-    const btn = container.querySelector("button");
-    expect(btn).toBeTruthy();
-    btn!.click();
-    expect(calls.length).toBe(1);
-    const [code, evaluate] = calls[0];
-    expect(typeof code).toBe("string");
-    expect(code.length).toBeGreaterThan(0);
-    expect(evaluate).toBe(true); // load should also trigger evaluation
-  });
+  for (const [example, layers] of examples.map((item, index) => [item, [2, 3, 1, 1, 3, 2][index]] as const)) {
+    it(`builds and queries ${example.name}`, () => {
+      initRegistry();
+      const graph = createExampleGraph(example.name);
+      expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+      const result = compileLiveGraph(graph);
+      restoreRegistry(result.registry);
+      expect(result.screens).toHaveLength(layers);
+      expect(result.screens.every(screen => [0, 0.125, 1.375, 3.25].some(cycle => screen.queryArc(cycle, cycle).length))).toBe(true);
+    });
+  }
 
-  it("resets cps before loading the example", () => {
-    setupExamples(container);
-    container.querySelector("button")!.click();
-    expect(events).toEqual(["resetCps", "setCode"]);
+  it("connects different signals to the two axes of Scroll and Position", () => {
+    for (const [example, kind] of [["rgb", "scroll"], ["picodevil", "position"]] as const) {
+      const graph = createExampleGraph(example);
+      const node = graph.nodes.find(item => item.kind === kind)!;
+      const { x, y } = Object.fromEntries(graph.edges.filter(edge => edge.to === node.id).map(edge => [edge.input, edge.from]));
+      expect(x).toBeTruthy();
+      expect(y).toBeTruthy();
+      expect(x).not.toBe(y);
+    }
   });
 });

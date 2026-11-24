@@ -336,6 +336,17 @@ export function getFftState() {
   };
 }
 
+/** Subscribe to live measurements without opening another audio input. */
+export function previewFft(band: 'vol' | 'bass' | 'mid' | 'treble'): ReturnType<typeof signal> {
+  activeFeatures.add(band === 'vol' ? 'rms' : 'amplitudeSpectrum');
+  return signal(() => {
+    if (band === 'vol') return volValue;
+    if (band === 'bass') return binValues[0] ?? 0;
+    if (band === 'mid') return binValues[Math.floor(binValues.length / 2)] ?? 0;
+    return binValues[binValues.length - 1] ?? 0;
+  });
+}
+
 // ── config change callback ───────────────────────────────────────────────────
 
 let _configChangeCb: (() => void) | null = null;

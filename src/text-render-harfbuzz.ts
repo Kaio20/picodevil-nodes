@@ -5,10 +5,11 @@ import {
   Buffer as HBBuffer,
   Variation,
   shape,
+  type AxisInfo,
 } from 'harfbuzzjs';
-import { PAD, LINE_HEIGHT_FACTOR } from './text-render';
+import { PAD, LINE_HEIGHT_FACTOR, textSlant } from './text-render';
 
-type FontEntry = { face: Face; hbFont: HBFont };
+type FontEntry = { face: Face; hbFont: HBFont; axes: Map<string, AxisInfo & { tag: string }> };
 const fontCache = new Map<string, FontEntry>();
 const fontLoading = new Set<string>();
 
@@ -25,11 +26,7 @@ export function getHarfbuzzFace(srcUrl: string): FontEntry | null {
       .then(() => fetch(srcUrl))
       .then(r => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
       .then(buf => {
-        const blob = new HBBlob(buf);
-        const face = new Face(blob, 0);
-        // blob can be released — Face holds its own WASM reference
-        const hbFont = new HBFont(face);
-        fontCache.set(srcUrl, { face, hbFont });
+        fontCache.set(srcUrl, makeFontEntryFromBuffer(buf));
       })
       .catch(err => {
         fontLoading.delete(srcUrl);
@@ -40,13 +37,14 @@ export function getHarfbuzzFace(srcUrl: string): FontEntry | null {
 }
 
 /**
- * Create a HarfBuzz font entry directly from an ArrayBuffer (used in tests).
+ * Keep the real font's axis ranges and case-sensitive tags with its cached face.
  */
 export function makeFontEntryFromBuffer(buf: ArrayBuffer): FontEntry {
   const blob = new HBBlob(buf);
   const face = new Face(blob, 0);
   const hbFont = new HBFont(face);
-  return { face, hbFont };
+  const axes = new Map(Object.entries(face.getAxisInfos()).map(([tag, info]) => [tag.toLowerCase(), { tag, ...info }]));
+  return { face, hbFont, axes };
 }
 
 /**
@@ -70,6 +68,7 @@ export function renderTextHarfbuzz(
   variation: Record<string, number>,
   fontColor: string,
   fontBGColor?: string,
+  slant = 0,
 ): HTMLCanvasElement {
   const { face, hbFont } = entry;
   const scale = size / face.upem;
@@ -86,6 +85,7 @@ export function renderTextHarfbuzz(
 
   const lines = text.split('\n');
   const lh = size * LINE_HEIGHT_FACTOR;
+  const { shear, extraWidth } = textSlant(slant, lh);
 
   // Shape each line: HarfBuzz resolves GSUB substitutions and GPOS positioning.
   const shapedLines = lines.map(line => {
@@ -105,7 +105,7 @@ export function renderTextHarfbuzz(
   const maxW = Math.max(1, ...lineWidths);
 
   const canvas = document.createElement('canvas');
-  canvas.width  = Math.ceil(maxW + PAD * 2);
+  canvas.width  = Math.ceil(maxW + PAD * 2 + extraWidth);
   canvas.height = Math.ceil(lh * lines.length + PAD * 2);
 
   const ctx = canvas.getContext('2d')!;
@@ -120,7 +120,9 @@ export function renderTextHarfbuzz(
     const glyphs = shapedLines[i];
     if (!glyphs.length) continue;
     // Centre text vertically within line height using ascender/descender metrics.
-    const baseline = PAD + i * lh + lh / 2 + ascPx - emPx / 2;
+    const center = PAD + i * lh + lh / 2;
+    const baseline = center + ascPx - emPx / 2;
+    if (shear) ctx.setTransform(1, 0, shear, 1, extraWidth / 2 - shear * center, 0);
 
     let penX = PAD;
     for (const g of glyphs) {

@@ -1219,7 +1219,7 @@ PatternProto.fontBGColour = PatternProto.fontBGColor;
  * @returns {Pattern} pattern with font axis applied
  * @example
  * $: text('Hello').font('Recursive').fontAxis('wght', 900)
- * $: text('A').font('Anybody').fontAxis('wght', slider(100, 100, 900)).fontAxis('slnt', 10)
+ * $: text('A').font('Recursive').fontAxis('wght', slider(400, 300, 1000)).fontAxis('slnt', -10)
  */
 PatternProto.fontAxis = function(tag: any, value: any) {
   const tagStr = typeof tag === 'string' ? tag

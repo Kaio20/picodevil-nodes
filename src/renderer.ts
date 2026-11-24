@@ -15,10 +15,7 @@ import type { VideoEl } from './video-element-state';
 import type { createVideoPoolManager } from './video-pool-manager';
 import { buildFontString, renderTextToCanvas } from './text-render';
 import { renderQrToCanvas } from './qr-render';
-import { resolveAxisTag } from './text-render-opentype';
-
 import { getHarfbuzzFace, renderTextHarfbuzz } from './text-render-harfbuzz';
-import { FONT_AXES } from './font-list';
 
 type VideoPool = ReturnType<typeof createVideoPoolManager>;
 
@@ -47,6 +44,7 @@ export class FrameRenderer {
   lastEventCount = 0;
   /** Per-frame draw-phase budget (ms); the draw loop bails past it. Settable for tests. */
   maxDrawTimeMs = MAX_DRAW_TIME_MS;
+  prewarmVideos = true;
   /** Active video elements this frame. Exposed for metrics in main.ts. */
   readonly activeVideoEls: VideoEl[] = [];
 
@@ -206,7 +204,7 @@ export class FrameRenderer {
 
     // Phase 4: prewarm (lookahead query + element prep)
     performance.mark('pd-phase-start');
-    if (cps > 0) this.prewarmSources(screens, cycle, cps);
+    if (this.prewarmVideos && cps > 0) this.prewarmSources(screens, cycle, cps);
     this._endPhase('pd prewarm', this.metrics.phasePrewarm);
 
     if ((globalThis as any).pdDebug) this.dbgLog(needed, t, nowWall);
@@ -378,24 +376,13 @@ export class FrameRenderer {
    */
   private getTextCanvas(ev: any): HTMLCanvasElement {
     const textStr     = typeof ev.text === 'string' ? ev.text : '';
-    const family      = ev.font ?? 'sans-serif';
+    const family      = (ev.font ?? 'sans-serif').trim().replace(/^(['"])(.*)\1$/, '$2');
     const fontStr     = buildFontString(ev.font, ev.fontSize != null ? Number(ev.fontSize) : undefined);
     const fontColor   = ev.fontColor   ?? 'white';
     const fontBGColor = ev.fontBGColor ?? '';
 
     const sizeMatch = /(\d+(?:\.\d+)?)px/.exec(fontStr);
     const size = sizeMatch ? parseFloat(sizeMatch[1]) : 128;
-
-    // Build variation axis map, recovering correct case and clamping to declared axis range.
-    const variation: Record<string, number> = {};
-    const axes = FONT_AXES[family] ?? [];
-    for (const [k, v] of Object.entries(ev)) {
-      if (!k.startsWith('_fontVariation_')) continue;
-      const tag = resolveAxisTag(family, k.slice(15));
-      const axisSpec = axes.find(a => a.tag === tag);
-      const val = Number(v);
-      variation[tag] = axisSpec ? Math.min(axisSpec.max, Math.max(axisSpec.min, val)) : val;
-    }
 
     // Hosted fonts: use HarfBuzz for shaping + glyph path rendering (taint-free, full
     // variation). A hosted font that hasn't finished loading falls back to Canvas 2D
@@ -404,8 +391,24 @@ export class FrameRenderer {
     const srcUrl = this.findFontSrcUrl(family);
     const entry = srcUrl ? getHarfbuzzFace(srcUrl) : null;
 
+    const variation: Record<string, number> = {};
+    let slant = 0;
+    const prefix = '_fontVariation_';
+    for (const [key, value] of Object.entries(ev)) {
+      if (!key.startsWith(prefix)) continue;
+      const tag = key.slice(prefix.length).toLowerCase();
+      const amount = Number(value);
+      if (!Number.isFinite(amount)) continue;
+      const axis = entry?.axes.get(tag);
+      const native = axis ? Math.min(axis.max, Math.max(axis.min, amount)) : 0;
+      if (axis) variation[axis.tag] = native;
+      if (tag === 'slnt') slant += amount - native;
+      if (tag === 'ital' && !axis) slant -= 12 * Math.max(-1, Math.min(1, amount));
+    }
+    // Supply the part of the slant angle the font cannot render natively.
+    slant = Math.max(-45, Math.min(45, slant));
     const varKey = Object.keys(variation).sort().map(k => `${k}=${variation[k]}`).join(',');
-    const key = `${entry ? `hb:${srcUrl}` : 'c2d'}|${fontStr}|${fontColor}|${fontBGColor}|${varKey}|${textStr}`;
+    const key = `${entry ? `hb:${srcUrl}` : 'c2d'}|${fontStr}|${fontColor}|${fontBGColor}|${slant}|${varKey}|${textStr}`;
 
     const cached = this.textCanvasCache.get(key);
     if (cached) {
@@ -416,10 +419,8 @@ export class FrameRenderer {
     }
 
     const canvas = entry
-      ? renderTextHarfbuzz(textStr, entry, size, variation, fontColor, fontBGColor || undefined)
-      // Canvas 2D: used for websafe fonts and while a hosted font is loading.
-      // Variation axes are silently ignored (websafe fonts aren't variable).
-      : renderTextToCanvas(textStr, fontStr, fontColor, fontBGColor || undefined);
+      ? renderTextHarfbuzz(textStr, entry, size, variation, fontColor, fontBGColor || undefined, slant)
+      : renderTextToCanvas(textStr, fontStr, fontColor, fontBGColor || undefined, slant);
 
     while (this.textCanvasCache.size >= MAX_TEXT_CANVASES) {
       const oldestKey = this.textCanvasCache.keys().next().value as string;

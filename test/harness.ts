@@ -32,7 +32,8 @@ export function parseFlags(argv: string[] = process.argv.slice(2)) {
 
 // The GL flags that make WebGL2 work in headless Chromium (ANGLE/Metal with a
 // SwiftShader fallback). Kept identical to the original harnesses.
-const GL_ARGS = ["--use-gl=angle", "--use-angle=metal", "--enable-unsafe-swiftshader"];
+const GL_ARGS = ["--use-gl=angle", "--enable-unsafe-swiftshader"];
+if (process.platform === "darwin") GL_ARGS.push("--use-angle=metal");
 
 // ============================================================
 // Harness lifecycle
@@ -96,7 +97,11 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
   const port = typeof addr === "string" ? 5173 : addr.port;
   const url = `http://localhost:${port}`;
 
-  const browser = await chromium.launch({ headless: opts.headless, args: GL_ARGS });
+  const browser = await chromium.launch({
+    headless: opts.headless,
+    executablePath: process.env.NODESDEVIL_CHROMIUM,
+    args: GL_ARGS,
+  });
   const context = await browser.newContext({ viewport: opts.viewport });
   if (opts.pinMediaToOrigin) {
     // Runs before page scripts on every navigation, so the runtime reads it on

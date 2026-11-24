@@ -11,6 +11,7 @@ import {
   isStreamActive, setStreamOnChange, reconnectStreams,
 } from "./stream-manager";
 import { makeThumbCell, cellKey, insertName } from "./thumbs";
+import { ignoreDropClick, sidebarDrop } from "./node-sidebar-drag";
 
 let container: HTMLElement;
 
@@ -171,6 +172,15 @@ const ICON_EDIT =
 const DEFAULTS_URL = "https://videoclip.picodevil.com/sources.json";
 /** The fetched defaults list, or null until the one-shot fetch resolves (or fails). */
 let defaultSources: SourceItem[] | null = null;
+let defaultSourcesRequest: Promise<SourceItem[]> | undefined;
+
+export async function loadExampleMedia(names: readonly string[]) {
+  if (names.length === 0) return;
+  const sources = defaultSources ?? await defaultSourcesRequest ?? [];
+  const present = new Set(getAllEntries().map(entry => entry.name));
+  const wanted = new Set(names);
+  addFromServer(sources.filter(item => item.name && wanted.has(item.name) && !present.has(item.name)));
+}
 
 /**
  * Whether to auto-populate the registry with the CDN defaults once they're
@@ -198,17 +208,18 @@ export function setupMediaLoader(el: HTMLElement, isFreshSession = false) {
   // just enables the "Defaults" button, shown only when it contains media not
   // already in the list — so a failed/blocked fetch loads nothing and the
   // button stays hidden.
-  fetch(DEFAULTS_URL)
+  defaultSourcesRequest = fetch(DEFAULTS_URL)
     .then(res => res.ok ? res.json() : null)
-    .then(items => {
-      if (!Array.isArray(items)) return;
+    .then((items: unknown) => Array.isArray(items) ? items as SourceItem[] : [])
+    .catch(() => []);
+  void defaultSourcesRequest.then(items => {
+      if (items.length === 0) return;
       defaultSources = items;
       if (shouldAutoloadDefaults(isFreshSession, getAllEntries().length)) {
         addFromServer(defaultSources);
       }
       render();
-    })
-    .catch(() => {/* offline or CORS-blocked — nothing loaded, button stays hidden */});
+    });
 
   // Reconnect persisted webcam streams (screen captures need manual reconnect)
   reconnectStreams().then(render);
@@ -687,7 +698,7 @@ const DRAG_THRESHOLD = 6;   // px of movement to start a mouse drag / abort a to
 const TOUCH_HOLD_MS = 220;  // press-and-hold before a touch drag lifts
 
 type DragState = {
-  name: string; el: HTMLElement; pane: HTMLElement; axis: "x" | "y";
+  id: string; name: string; el: HTMLElement; pane: HTMLElement; axis: "x" | "y";
   pointerId: number; startX: number; startY: number;
   isTouch: boolean; active: boolean; holdTimer?: ReturnType<typeof setTimeout>;
   offsetX: number; offsetY: number; clone?: HTMLElement;
@@ -757,15 +768,20 @@ function onPointerMove(e: PointerEvent) {
     beginActive();
   }
   moveClone(e.clientX, e.clientY);
-  previewAt(e.clientX, e.clientY);
+  if (!sidebarDrop({ kind: "media", data: { media: drag.id } }, e.clientX, e.clientY)) previewAt(e.clientX, e.clientY);
 }
 
 function onPointerUp(e: PointerEvent) {
-  if (drag && e.pointerId === drag.pointerId) finishDrag(true);
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const inGraph = drag.active && sidebarDrop({ kind: "media", data: { media: drag.id } }, e.clientX, e.clientY, true);
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  finishDrag(!inGraph && Boolean(under && drag.pane.contains(under)));
 }
 function onPointerCancel(e: PointerEvent) {
   if (drag && e.pointerId === drag.pointerId) finishDrag(false);
 }
+
+function onDragKeyDown(e: KeyboardEvent) { if (e.key === "Escape") finishDrag(false); }
 
 function finishDrag(commit: boolean) {
   if (!drag) return;
@@ -774,7 +790,9 @@ function finishDrag(commit: boolean) {
   document.removeEventListener("pointermove", onPointerMove);
   document.removeEventListener("pointerup", onPointerUp);
   document.removeEventListener("pointercancel", onPointerCancel);
+  document.removeEventListener("keydown", onDragKeyDown);
   document.removeEventListener("touchmove", preventTouchScroll);
+  sidebarDrop(null);
   drag = null;
   if (!active) return; // never lifted → it was a tap/scroll; leave the click alone
   clone?.remove();
@@ -786,9 +804,7 @@ function finishDrag(commit: boolean) {
   }
   // Swallow the click that a mouse-up/tap fires right after a real drag, so the
   // drop doesn't also insert the clip's name.
-  const swallow = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); };
-  document.addEventListener("click", swallow, { capture: true, once: true });
-  const t = setTimeout(() => document.removeEventListener("click", swallow, { capture: true }), 350);
+  ignoreDropClick();
   render(); // normalise DOM to the registry (commit applied it; a cancel restores it)
 }
 
@@ -799,13 +815,14 @@ function attachReorder(handle: HTMLElement, item: HTMLElement, entry: MediaEntry
     const pane = item.parentElement;
     if (!pane) return;
     drag = {
-      name: entry.name, el: item, pane, axis,
+      id: entry.id, name: entry.name, el: item, pane, axis,
       pointerId: e.pointerId, startX: e.clientX, startY: e.clientY,
       isTouch: e.pointerType === "touch", active: false, offsetX: 0, offsetY: 0,
     };
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("pointerup", onPointerUp);
     document.addEventListener("pointercancel", onPointerCancel);
+    document.addEventListener("keydown", onDragKeyDown);
     if (drag.isTouch) drag.holdTimer = setTimeout(beginActive, TOUCH_HOLD_MS);
   });
 }

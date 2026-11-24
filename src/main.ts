@@ -5,9 +5,9 @@ import { CYCLES_PER_SECOND, setRuntimeCps, MAX_FREE_VIDEO_ELEMENTS } from "./con
 import { CpsController } from "./cps-controller";
 import { createMetrics, recordFrameMetrics } from "./frame-metrics";
 import { resolveMedia, addMedia, clearAll as clearMediaRegistry, setDurationByUrl, loadVideo, loadImage, getAllEntries, initRegistry, addOnChange } from "./media-registry";
-import { resolveUrl, probeHealth, shouldAutoProbeOnStartup } from "./server-config";
-import { initRegistry as initPatternRegistry, each, all } from "./pattern-registry";
-import { loadFromUrl, saveToUrl, setUrlWarnCallback, hashLooksCorrupt } from "./url-state";
+import { probeHealth, shouldAutoProbeOnStartup } from "./server-config";
+import { initRegistry as initPatternRegistry, restoreRegistry, each, all } from "./pattern-registry";
+import { loadFromUrl, saveToUrl, cancelUrlSave, setUrlWarnCallback, hashLooksCorrupt, persistableMedia } from "./url-state";
 import { defaultCode } from "./editor";
 import { pickAutostartCode } from "./examples";
 import { createVideoPoolManager } from "./video-pool-manager";
@@ -24,6 +24,13 @@ import { showFatalOverlay, rendererFailureMessage } from "./fatal-overlay";
 import { FrameRenderer } from "./renderer";
 import type { Renderer } from "./renderer-interface";
 import { EvalController } from "./eval-controller";
+import { starterGraph } from "./node-graph";
+import { NodeEditor } from "./node-editor";
+import { compileLiveGraph, mediaUrl, NodePreviews } from "./node-runtime";
+import { NodeProjection } from "./node-projection";
+import { loadNodes, saveNodes, type NodeSession } from "./node-session";
+import { createExampleGraph } from "./node-examples";
+import { loadExampleMedia } from "./media-loader";
 
 import { Pattern, useRNG } from "@strudel/core";
 useRNG('precise');
@@ -41,8 +48,8 @@ try {
     // Repeated unrecoverable context loss (e.g. a Windows GPU stuck resetting) —
     // stop flashing black and tell the user what to try.
     onUnrecoverable: () => showFatalOverlay(
-      "picodevil lost the graphics context",
-      "The GPU repeatedly dropped picodevil's graphics context and it couldn't recover. " +
+      "NodesDevil lost the graphics context",
+      "The GPU repeatedly dropped NodesDevil's graphics context and it couldn't recover. " +
       "This is usually an out-of-date graphics driver or the GPU running out of memory — " +
       "try updating your drivers, a simpler pattern, or a smaller window, then reload.",
     ),
@@ -57,9 +64,18 @@ try {
   throw err;
 }
 
+const projection = new NodeProjection(() => { resize(); scheduleFrame(); });
+const previews = new NodePreviews();
+
 function resize() {
-  canvas.width = window.innerWidth * devicePixelRatio;
-  canvas.height = window.innerHeight * devicePixelRatio;
+  const output = projection.outputWindow ?? window;
+  const width = Math.max(1, Math.round(output.innerWidth * output.devicePixelRatio));
+  const height = Math.max(1, Math.round(output.innerHeight * output.devicePixelRatio));
+  document.body.classList.toggle("nd-output-open", output !== window);
+  if (canvas.width === width && canvas.height === height && canvas.dataset.sized) return;
+  canvas.dataset.sized = "true";
+  canvas.width = width;
+  canvas.height = height;
   activeRenderer.resize(canvas.width, canvas.height);
 }
 window.addEventListener("resize", resize);
@@ -88,10 +104,7 @@ const pdMetrics = createMetrics();
 
 // --- video pool ---
 const pool = createVideoPoolManager({
-  resolveMediaUrl: (name, base) => {
-    const entry = resolveMedia(name);
-    return entry ? resolveUrl(entry.url) : base + name;
-  },
+  resolveMediaUrl: mediaUrl,
   onDurationDiscovered: (srcUrl, duration) => {
     setDurationByUrl(srcUrl, duration);
   },
@@ -169,15 +182,28 @@ window.pdEval = (code) => evalController.eval(code);
 // --- render loop ---
 let lastRafAbsTime = performance.now();
 let rafPaused = false;
+let scheduled: { host: Window; id: number } | undefined;
+
+function scheduleFrame() {
+  const output = projection.outputWindow;
+  const host = output && !output.document.hidden ? output : window;
+  if (scheduled?.host === host) return;
+  if (scheduled) scheduled.host.cancelAnimationFrame(scheduled.id);
+  scheduled = { host, id: host.requestAnimationFrame(() => {
+    scheduled = undefined;
+    frame();
+  }) };
+}
 
 // Expose active video elements for testing/debugging
 (window as any)._pdActiveVideoEls = frameRenderer.activeVideoEls;
 
 function frame() {
-  if (rafPaused) { requestAnimationFrame(frame); return; }
+  scheduleFrame();
+  if (rafPaused) return;
   // Skip rendering while the GPU context is lost — issuing GL calls into a dead
   // context spews errors and can starve the browser's chance to restore it.
-  if (activeRenderer.isContextLost?.()) { requestAnimationFrame(frame); return; }
+  if (activeRenderer.isContextLost?.()) return;
   const rafAbsNow = performance.now();
   const interFrameGap = rafAbsNow - lastRafAbsTime;
   lastRafAbsTime = rafAbsNow;
@@ -187,6 +213,7 @@ function frame() {
   fftUpdateFrame();
 
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, rafAbsNow);
+  projection.present(canvas);
 
   // Test hook: expose the live loop's current frame coordinates so a capture
   // harness can phase-sample the running render (re-render the exact live cycle
@@ -203,9 +230,9 @@ function frame() {
   );
 
   flushWarnings();
-  requestAnimationFrame(frame);
+  previews.draw(nodeEditor.graph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, canvas.width / canvas.height);
 }
-requestAnimationFrame(frame);
+document.addEventListener("visibilitychange", scheduleFrame);
 
 // Test-only deterministic-render hooks. Used by golden-render harness and
 // future visual regression tests. pdRenderAt synchronously renders one frame
@@ -222,6 +249,7 @@ requestAnimationFrame(frame);
   setRuntimeCps(cps);
   const wall = wallMs ?? performance.now();
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, wall);
+  projection.present(canvas);
 };
 
 // --- URL state ---
@@ -229,6 +257,14 @@ let currentCode = defaultCode;
 export function getCurrentCode(): string { return currentCode; }
 
 const urlState = loadFromUrl();
+const savedNodes = loadNodes();
+const initialGraph = savedNodes?.draft ?? starterGraph();
+const session: NodeSession = savedNodes ?? {
+  draft: initialGraph,
+  view: { x: 0, y: 0, zoom: 1, previews: [initialGraph.nodes[0].id] },
+  media: [],
+};
+let mode: "nodes" | "code" = urlState ? "code" : "nodes";
 if (!urlState && hashLooksCorrupt(window.location.hash)) {
   // The link carried a v1 state envelope that didn't decode (truncated by a chat
   // app/proxy, hand-edited, etc.). Tell the user their work was dropped instead of
@@ -245,22 +281,104 @@ if (urlState) {
   // are excluded via `autostart: false`. Source names resolve at query time, so
   // it renders once the async defaults land — no re-eval needed.
   currentCode = pickAutostartCode() || defaultCode;
+  if (savedNodes) {
+    initRegistry(savedNodes.media);
+    if (savedNodes.fft) applyFftConfig(savedNodes.fft);
+  }
 }
 
 setUrlWarnCallback((msg) => { if (msg) warn(msg); });
-const saveUrl = () => saveToUrl(currentCode, getAllEntries(), getFftConfig());
-addOnChange(saveUrl);
-onFftConfigChange(saveUrl);
+function saveWorkspace() {
+  if (mode === "nodes") {
+    session.media = persistableMedia(getAllEntries());
+    session.fft = getFftConfig();
+    saveNodes(session);
+  } else saveToUrl(currentCode, getAllEntries(), getFftConfig());
+}
 
 // --- editor ---
-setupEditor(
+const codeEditor = setupEditor(
   document.getElementById("editor-wrap")!,
   currentCode,
   (code) => {
     currentCode = code;
-    saveUrl();
+    saveWorkspace();
   },
+  mode === "code",
 );
-// A fresh session = no saved URL state. Tells the media loader to auto-pull the
-// curated CDN defaults so a first-time visitor lands with media ready.
-setupSidebar(!urlState);
+
+const nodeHost = document.getElementById("node-editor")!;
+const codeBar = document.getElementById("nd-code-bar")!;
+function showWorkspace(next: typeof mode) {
+  mode = next;
+  document.body.classList.toggle("nd-mode", next === "nodes");
+  nodeHost.hidden = next !== "nodes";
+  codeBar.hidden = next !== "code";
+  projection.setWorkspace(next === "nodes");
+  if (next === "nodes") {
+    cancelUrlSave();
+    nodeEditor.refresh();
+    // A code share hash opens the text workspace. Clear it when explicitly switching to nodes.
+    if (loadFromUrl()) history.replaceState(null, "", location.pathname + location.search);
+  } else {
+    codeEditor.requestMeasure();
+    codeEditor.focus();
+  }
+  measureSidebar();
+}
+
+const nodeEditor = new NodeEditor(nodeHost, {
+  graph: session.draft,
+  view: session.view,
+  save: graph => { session.draft = graph; saveWorkspace(); },
+  run: (graph, restart) => {
+    try {
+      const next = compileLiveGraph(graph);
+      const now = performance.now();
+      if (restart) cpsController.reset(now);
+      restoreRegistry(next.registry);
+      cpsController.setCpm(next.tempo, now);
+      evalController.screens = next.screens;
+      evalController.namedScreens = next.namedScreens;
+      session.live = graph;
+      saveWorkspace();
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  },
+  showCode: () => showWorkspace("code"),
+  openOutput: () => projection.open(),
+  bindProjectionToggle: button => projection.bindToggle(button),
+});
+
+document.getElementById("nd-show-nodes")!.addEventListener("click", () => showWorkspace("nodes"));
+document.getElementById("nd-code-output")!.addEventListener("click", () => projection.open());
+
+const setCode = window.pdSetCode;
+window.pdSetCode = (code, evaluate) => { showWorkspace("code"); setCode(code, evaluate); };
+const insertCode = window.pdInsertAtCursor;
+window.pdInsertAtCursor = name => {
+  const medium = mode === "nodes" ? resolveMedia(name) : undefined;
+  if (medium) nodeEditor.addMedia(medium.id);
+  else if (mode === "code") insertCode(name);
+};
+
+const sidebar = document.getElementById("sidebar-panel")!;
+function measureSidebar() {
+  const inset = sidebar.classList.contains("open") && innerWidth > 680 ? sidebar.offsetWidth + 24 : 24;
+  document.body.style.setProperty("--nd-sidebar", `${inset}px`);
+}
+new ResizeObserver(measureSidebar).observe(sidebar);
+new MutationObserver(measureSidebar).observe(sidebar, { attributes: true, attributeFilter: ["class"] });
+setupSidebar(!urlState && !savedNodes, mode === "nodes" ? "videos" : undefined, example => {
+  showWorkspace("nodes");
+  nodeEditor.loadExample(createExampleGraph(example.name));
+  void loadExampleMedia(example.media ?? []);
+});
+addOnChange(() => { nodeEditor.mediaChanged(); saveWorkspace(); });
+onFftConfigChange(saveWorkspace);
+showWorkspace(mode);
+if (mode === "nodes") nodeEditor.run(session.live ?? (savedNodes ? starterGraph() : initialGraph));
+window.addEventListener("pagehide", () => previews.dispose());
+scheduleFrame();

@@ -1,8 +1,8 @@
-![picodevil logo](public/picodevil.png)
+![NodesDevil mascot](public/picodevil.png)
 
-# picodevil
+# NodesDevil
 
-This is a livecoding tool that runs in the browser. It allows you to sample, cut up, and generally fuck about with videos. It's based on [Strudel](https://strudel.cc), adapting its capabilities to make more sense for visuals than for audio.
+NodesDevil is a browser-based node editor for live video patterns. It builds on Pico Devil by [V Buckenham](https://vbuckenham.com/) and its [Strudel](https://strudel.cc) pattern engine.
 
 It's built by [V Buckenham](https://vbuckenham.com/) - hello! Let me know if you find bugs or make anything cool with it! 
 
@@ -10,9 +10,9 @@ This is my first time building a tool where I have used an LLM in a major way. S
 
 ## How to use
 
-The easiest way to use Picodevil is to go to the hosted version at [picodevil.com](https://picodevil.com/). You can poke at the examples in the right hand sidebar, load them up, change some stuff, and then press Ctrl-Enter to see the results.
+Drag a clip from **Videos** into the graph and connect it to **Output**. Drag a socket onto empty space to find compatible nodes. Closing that menu without a selection disconnects the dragged cables. Alt-click a socket to disconnect immediately. Open a node's preview to see its result while editing. Press **Run** or **Ctrl/Cmd+Enter** when the graph is ready for the live output.
 
-You can also load videos by opening the sidebar - click the little arrow on the right hand side of the window. There's also a reference to the functions in one of the tabs.
+Use **Examples** to load editable node graphs. For controls such as position, scroll, and scale, X and Y each have a separate input. Use **Open Output** to send the show to a separate window. Move it to the projector and double-click for fullscreen. **Projection** toggles the floating preview. Drag its top-left grip to resize the preview or its four corner handles to calibrate the output. The **Code** button opens the original text workspace.
 
 There's also an optional server, which will let you do things like transcode videos so they can be scrubbed backwards, and allow downloading from YouTube - see [picodevil-server](https://github.com/v21/picodevil-server) for details.
 
@@ -328,4 +328,4 @@ Oh, one thing to be aware of: if you reference a layer *before* it's rendered, i
 
 ## More resources
 
-Honestly, I need to write more! This hopefully covers a lot of the important concepts, although I admit it only really works if you already know Strudel. There's also an LLM-written [GUIDE](GUIDE.md), which goes over all the major systems one by one. I said this before, but I'd very much recommend playing with the examples - I've tried to demo most of the core things there. 
+Honestly, I need to write more! This hopefully covers a lot of the important concepts, although I admit it only really works if you already know Strudel. There's also an LLM-written [GUIDE](GUIDE.md), which goes over all the major systems one by one. I said this before, but I'd very much recommend playing with the examples - I've tried to demo most of the core things there.

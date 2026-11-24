@@ -940,7 +940,7 @@ export class WebGLRenderer implements Renderer {
   /** Set by dispose(). Suppresses the loss/restore handlers for a deliberate teardown. */
   private disposed = false;
 
-  constructor(canvas: HTMLCanvasElement, opts: { onUnrecoverable?: () => void } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { onUnrecoverable?: () => void; antialias?: boolean } = {}) {
     this.onUnrecoverable = opts.onUnrecoverable;
     // `?pdpreserve` keeps the drawing buffer so an offscreen capture harness can
     // read the live frame directly (no extra render that would double-advance
@@ -955,7 +955,9 @@ export class WebGLRenderer implements Renderer {
       creationStatus = (e as WebGLContextEvent).statusMessage || '';
     };
     canvas.addEventListener('webglcontextcreationerror', onCreationError);
-    const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: preserve });
+    const gl = canvas.getContext('webgl2', {
+      alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: preserve, antialias: opts.antialias ?? true,
+    });
     canvas.removeEventListener('webglcontextcreationerror', onCreationError);
     if (!gl) {
       // Probe WebGL1 on a *fresh* canvas — a canvas that's already been asked for
@@ -1716,6 +1718,18 @@ export class WebGLRenderer implements Renderer {
     gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  }
+
+  /** Present a completed offscreen layer for synchronous thumbnail capture. */
+  presentLayer(name: string): boolean {
+    const entry = this.fbos.get(name);
+    if (!entry) return false;
+    const { gl } = this;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, entry.fbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(0, 0, entry.viewW, entry.viewH, 0, 0, this.w, this.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    return true;
   }
 
   /**

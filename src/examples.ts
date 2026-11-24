@@ -1,6 +1,9 @@
+export type ExampleName = "rgb" | "space_tv" | "canalslices" | "ducks" | "picodevil" | "colour grids (flashing)";
+
 export interface Example {
-  name: string;
+  name: ExampleName;
   code: string;
+  media?: readonly string[];
   /** Opt in to greeting a first-time visitor on a fresh session. Opt-in: only
    *  examples set `true` join the autostart pool. Omitted (or `false`) keeps an
    *  example out — `false` is used to flag *why* it's excluded (e.g.
@@ -11,6 +14,7 @@ export interface Example {
 export const examples: Example[] = [
   {
     name: "rgb",
+    media: ["rgb1", "rgb2", "rgb3"],
     autostart: true,
     code: `// by v21
 
@@ -29,6 +33,7 @@ $: s("prev").scale(.95).barrel(.01).alpha(.9)
   },
   {
     name: "space_tv",
+    media: ["scanlines", "issexercise1", "issexercise2", "issexercise3", "issdock", "issmodule", "tvsnow", "testcard"],
     autostart: true,
     code: `// by v21
 
@@ -53,6 +58,7 @@ $: s("issexercise1, issexercise2, issexercise3, issdock, issmodule, tvsnow, test
   ,
   {
     name: "canalslices",
+    media: ["canalboat"],
     autostart: true,
     code: `// by v21
  $: s("canalboat")
@@ -64,6 +70,7 @@ $: s("issexercise1, issexercise2, issexercise3, issdock, issmodule, tvsnow, test
   },
   {
     name: "ducks",
+    media: ["ducks"],
     autostart: true,
     code: `// by v21
 
@@ -145,7 +152,7 @@ export function pickAutostartCode(
   return eligible[pick(eligible.length)].code;
 }
 
-export function setupExamples(container: HTMLElement) {
+export function setupExamples(container: HTMLElement, onSelect: (example: Example) => void) {
   container.innerHTML = "";
   const list = document.createElement("ul");
   list.className = "examples-list";
@@ -154,13 +161,7 @@ export function setupExamples(container: HTMLElement) {
     const btn = document.createElement("button");
     btn.className = "pd-btn";
     btn.textContent = ex.name;
-    btn.addEventListener("click", () => {
-      // Reset tempo first so an example without setCps() runs at the default,
-      // rather than inheriting the previous example's cps. The example's own
-      // setCps() (if any) runs during eval below and wins.
-      (window as any).pdResetCps?.();
-      window.pdSetCode(ex.code, true); // load the example and evaluate it
-    });
+    btn.addEventListener("click", () => onSelect(ex));
     li.appendChild(btn);
     list.appendChild(li);
   }

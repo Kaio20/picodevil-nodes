@@ -16,6 +16,7 @@ export type RegistrySnapshot = {
   autoRenderIndex: number;
   eachFn: ((p: Pattern) => Pattern) | undefined;
   allFns: ((p: Pattern) => Pattern)[];
+  namedIndices: typeof lastNamedIndices;
 };
 
 /** Strip S or H prefix to get the user-facing FBO name. */
@@ -114,6 +115,7 @@ export function snapshotRegistry(): RegistrySnapshot {
     autoRenderIndex,
     eachFn,
     allFns: [...allFns],
+    namedIndices: lastNamedIndices,
   };
 }
 
@@ -127,7 +129,7 @@ export function restoreRegistry(snapshot: RegistrySnapshot): void {
   autoRenderIndex = snapshot.autoRenderIndex;
   eachFn = snapshot.eachFn;
   allFns = snapshot.allFns;
-  lastNamedIndices = [];
+  lastNamedIndices = snapshot.namedIndices;
 }
 
 /**

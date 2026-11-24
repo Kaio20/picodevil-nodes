@@ -1,6 +1,13 @@
 let _counter = 0;
 export function nextLayoutParent(): number { return ++_counter; }
 
+export function withLayoutCounter<T>(start: number, run: () => T): T {
+  const previous = _counter;
+  _counter = start;
+  try { return run(); }
+  finally { _counter = previous; }
+}
+
 /** Extract the layoutParent token from a hap value, or undefined if absent. */
 export function getLayoutParent(value: unknown): number | undefined {
   return Object(value) === value ? (value as any).layoutParent : undefined;

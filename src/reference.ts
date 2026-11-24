@@ -1,6 +1,8 @@
 import data from "virtual:reference-data";
 import { renderReferenceMarkdown } from "./reference-markdown";
 import { highlightJsToHtml, injectHighlightCss } from "./highlight-code";
+import { referenceNode } from "./node-graph";
+import { attachNodeDrag } from "./node-sidebar-drag";
 
 interface RefEntry {
   name: string;
@@ -79,6 +81,11 @@ export function setupReference(container: HTMLElement) {
       const nameEl = document.createElement("div");
       nameEl.className = "ref-entry-name";
       nameEl.textContent = sig;
+      const drop = referenceNode(entry.name, entry.aliases);
+      if (drop) {
+        attachNodeDrag(navLink, drop);
+        attachNodeDrag(nameEl, drop);
+      }
       if (entry.aliases.length) {
         const aliasSpan = document.createElement("span");
         aliasSpan.className = "ref-entry-aliases";

@@ -1,5 +1,7 @@
 import { fft, getFftState } from './fft-audio';
 import { getAllStreamStates } from './stream-manager';
+import { attachNodeDrag } from './node-sidebar-drag';
+import { fftBands } from './node-graph';
 
 function btn(text: string, onClick: () => void): HTMLButtonElement {
   const b = document.createElement('button');
@@ -54,6 +56,19 @@ function sliderRow(labelText: string, min: number, max: number, step: number, va
 
 export function setupAudioTab(container: HTMLElement): void {
   container.innerHTML = '';
+
+  const signals = section();
+  signals.classList.add('nd-audio-signals');
+  signals.append(label('FFT nodes'));
+  fftBands.forEach((band, index) => {
+    const handle = document.createElement('span');
+    handle.className = 'pd-btn';
+    handle.textContent = ['Volume', 'Bass', 'Mid', 'Treble'][index];
+    handle.title = 'Drag to the graph';
+    attachNodeDrag(handle, { kind: 'fft', data: { band } });
+    signals.append(handle);
+  });
+  container.append(signals);
 
   // ── Source section ───────────────────────────────────────────────────────
   const srcSection = section();

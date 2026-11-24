@@ -5,10 +5,10 @@ import type { MediaEntry } from "./media-registry";
  * tiny — a CDN `/thumbs/x.jpg`); client-generated `data:` thumbnails are not (large,
  * device-specific) and live in localStorage instead.
  */
-type UrlMediaEntry = Pick<MediaEntry, "id" | "name" | "url" | "type"> &
+export type UrlMediaEntry = Pick<MediaEntry, "id" | "name" | "url" | "type"> &
   Partial<Pick<MediaEntry, "duration" | "streamKind" | "deviceId" | "thumbnail">>;
 
-type FftConfig = { bins: number; smooth: number; cutoff: number; scale: number };
+export type FftConfig = { bins: number; smooth: number; cutoff: number; scale: number };
 type UrlState = { v: number; code: string; media: UrlMediaEntry[]; fft?: FftConfig };
 
 /** Maximum hash length (bytes) before we warn the user. */
@@ -56,11 +56,7 @@ function stripEntry(e: MediaEntry): UrlMediaEntry {
  * remote thumbnail URLs are kept (see stripEntry).
  */
 export function encodeUrlState(code: string, media: MediaEntry[], fft?: FftConfig): string {
-  // Drop blob: entries — they're session-scoped object URLs. The underlying File
-  // is gone after a reload (and a re-created blob wouldn't share the reference),
-  // so persisting them just resurrects dead, unplayable rows. Strip them here.
-  const persistable = media.filter((e) => !e.url.startsWith("blob:"));
-  const state: UrlState = { v: 1, code, media: persistable.map(stripEntry), ...(fft ? { fft } : {}) };
+  const state: UrlState = { v: 1, code, media: persistableMedia(media), ...(fft ? { fft } : {}) };
   return PREFIX + toBase64url(JSON.stringify(state, (key, value) => {
     if (typeof value === 'bigint') {
       console.warn(`[pd] unexpected BigInt in URL state field "${key}":`, value);
@@ -68,6 +64,11 @@ export function encodeUrlState(code: string, media: MediaEntry[], fft?: FftConfi
     }
     return value;
   }));
+}
+
+/** Blob URLs refer to the current page's files only. */
+export function persistableMedia(media: MediaEntry[]): UrlMediaEntry[] {
+  return media.filter(entry => !entry.url.startsWith("blob:")).map(stripEntry);
 }
 
 /**
@@ -108,6 +109,11 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let urlWarnCallback: ((msg: string | null) => void) | null = null;
 /** Latched once the size warning has fired, so it isn't repeated on every save. */
 let urlWarnShown = false;
+
+export function cancelUrlSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+}
 
 /** Register a callback to receive URL-encoding warnings (e.g. state too large). Pass null to clear. */
 export function setUrlWarnCallback(cb: ((msg: string | null) => void) | null) {

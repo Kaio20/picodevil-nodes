@@ -79,6 +79,14 @@ describe('renderTextHarfbuzz', () => {
     expect(pixelDiff(upright, italic)).toBeGreaterThan(100);
   });
 
+  it('changes the outline across the native Recursive Slant axis', () => {
+    const entry = loadEntry('Recursive');
+    expect(entry.axes.get('slnt')).toMatchObject({ min: -15, max: 0 });
+    const upright = renderTextHarfbuzz('hello', entry, 96, { slnt: 0 }, 'white');
+    const slanted = renderTextHarfbuzz('hello', entry, 96, { slnt: -15 }, 'white');
+    expect(pixelDiff(upright, slanted)).toBeGreaterThan(100);
+  });
+
   describe('all variable fonts render all axes at min/mid/max without throwing', () => {
     for (const [family, axes] of Object.entries(FONT_AXES)) {
       for (const axis of axes) {

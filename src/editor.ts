@@ -164,6 +164,7 @@ export function setupEditor(
   parent: HTMLElement,
   initialCode: string = defaultCode,
   onCodeChange?: (code: string) => void,
+  startInEditor = true,
 ): EditorView {
   const errorEl = document.createElement("div");
   errorEl.className = "pd-error";
@@ -398,10 +399,10 @@ export function setupEditor(
   };
 
   // evaluate initial code at startup
-  evalAndDecorate(view, initialCode);
-
-  // default focus to the editor so typing/eval works without a click
-  view.focus();
+  if (startInEditor) {
+    evalAndDecorate(view, initialCode);
+    view.focus();
+  }
 
   return view;
 }

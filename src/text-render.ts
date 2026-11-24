@@ -29,6 +29,11 @@ export function buildFontString(font?: string, fontSize?: number): string {
   return CSS_SIZE_RE.test(f) ? f : `${DEFAULT_SIZE}px ${f}`;
 }
 
+export function textSlant(angle: number, lineHeight: number) {
+  const shear = Math.tan(angle * Math.PI / 180);
+  return { shear, extraWidth: Math.ceil(Math.abs(shear) * lineHeight) };
+}
+
 /**
  * Render text to an HTMLCanvasElement sized to fit the content.
  * Background is transparent unless `fontBGColor` is provided.
@@ -45,11 +50,13 @@ export function renderTextToCanvas(
   fontStr: string,
   fontColor: string,
   fontBGColor?: string,
+  slant = 0,
 ): HTMLCanvasElement {
   const lines = text.split('\n');
   const sizeMatch = CSS_SIZE_RE.exec(fontStr);
   const size = sizeMatch ? parseFloat(sizeMatch[0]) : DEFAULT_SIZE;
   const lh = size * LINE_HEIGHT_FACTOR;
+  const { shear, extraWidth } = textSlant(slant, lh);
 
   const tmp = document.createElement('canvas');
   const tmpCtx = tmp.getContext('2d')!;
@@ -57,7 +64,7 @@ export function renderTextToCanvas(
   const maxW = Math.max(1, ...lines.map(l => tmpCtx.measureText(l).width));
 
   const canvas = document.createElement('canvas');
-  canvas.width  = Math.ceil(maxW + PAD * 2);
+  canvas.width  = Math.ceil(maxW + PAD * 2 + extraWidth);
   canvas.height = Math.ceil(lh * lines.length + PAD * 2);
 
   const ctx = canvas.getContext('2d')!;
@@ -70,7 +77,9 @@ export function renderTextToCanvas(
   ctx.fillStyle = fontColor;
   ctx.textBaseline = 'middle';
   for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], PAD, PAD + i * lh + lh / 2);
+    const center = PAD + i * lh + lh / 2;
+    if (shear) ctx.setTransform(1, 0, shear, 1, extraWidth / 2 - shear * center, 0);
+    ctx.fillText(lines[i], PAD, center);
   }
   return canvas;
 }

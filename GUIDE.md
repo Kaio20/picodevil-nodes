@@ -1,6 +1,6 @@
-# picodevil user guide
+# NodesDevil user guide
 
-picodevil is a live-coding visual instrument. You write JavaScript in a browser editor, press **Ctrl+Enter** to evaluate, and the code controls what gets drawn to a fullscreen canvas. Everything is built on rhythmic patterns from [Strudel](https://strudel.cc).
+NodesDevil is a node editor for live visuals, built on Pico Devil and the rhythmic patterns from [Strudel](https://strudel.cc). This guide documents the underlying functions and the original Code workspace.
 
 ## Getting started
 
@@ -8,7 +8,7 @@ picodevil is a live-coding visual instrument. You write JavaScript in a browser 
 npm install && npm run dev
 ```
 
-Open the browser. Type code in the editor. Press Ctrl+Enter to run it.
+Open the browser to work in the node graph. Select **Code** to open the text editor. Press **Ctrl/Cmd+Enter** to run the active workspace.
 
 ## Case-insensitive API
 
@@ -154,7 +154,7 @@ $: text('hi').fontColor("red green blue")              // patterned color
 
 ```js
 $: text('Hello').font('Recursive').fontAxis('wght', 900)
-$: text('A').font('Anybody').fontAxis('wght', slider(100, 100, 900)).fontAxis('slnt', 10)
+$: text('A').font('Recursive').fontAxis('wght', slider(400, 300, 1000)).fontAxis('slnt', -10)
 ```
 
 ### `fontPicker(initialFont?)`

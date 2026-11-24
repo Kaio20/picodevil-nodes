@@ -25,7 +25,7 @@
 export function rendererFailureMessage(err: unknown): { title: string; message: string } {
   if ((err as { name?: string } | null)?.name === "ShaderError") {
     return {
-      title: "picodevil couldn't start on this GPU",
+      title: "NodesDevil couldn't start on this GPU",
       message:
         "Your browser supports WebGL2, but its graphics shader failed to compile on " +
         "this GPU or driver. Updating your graphics drivers (or your browser) may fix " +
@@ -33,9 +33,9 @@ export function rendererFailureMessage(err: unknown): { title: string; message: 
     };
   }
   return {
-    title: "This browser can't run picodevil",
+    title: "This browser can't run NodesDevil",
     message:
-      "picodevil needs WebGL2 with hardware acceleration. Try a recent Chrome, Edge, " +
+      "NodesDevil needs WebGL2 with hardware acceleration. Try a recent Chrome, Edge, " +
       "or Firefox, and make sure hardware acceleration is enabled in your browser settings.",
   };
 }

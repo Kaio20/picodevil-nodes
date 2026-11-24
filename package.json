@@ -1,5 +1,5 @@
 {
-  "name": "picodevil",
+  "name": "nodesdevil",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
@@ -24,6 +24,7 @@
     "test:stress:headless": "tsx test/stress-test.ts --headless",
     "test:upload": "tsx test/upload-integration-test.ts --headless",
     "test:url-state": "tsx test/url-state-integration.test.ts --headless",
+    "test:nodes": "tsx test/nodesdevil-browser-test.ts",
     "golden:capture": "tsx test/golden-render.ts capture --headless",
     "golden:compare": "tsx test/golden-render.ts compare --headless",
     "bench:examples:capture": "tsx test/example-bench.ts capture --headless",
@@ -59,6 +60,7 @@
     "wawoff2": "^2.0.1"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "@types/qrcode-generator": "^0.0.16",
     "@vitest/browser": "^4.0.18",
     "@vitest/browser-playwright": "^4.0.18",

@@ -239,6 +239,10 @@ export function resolveMedia(name: string): MediaEntry | undefined {
   return registry.find(e => e.name === name);
 }
 
+export function resolveMediaId(id: string): MediaEntry | undefined {
+  return registry.find(entry => entry.id === id);
+}
+
 export function getAllEntries(): MediaEntry[] {
   return registry.slice();
 }

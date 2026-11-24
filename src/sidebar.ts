@@ -2,7 +2,7 @@ import { setupReference } from "./reference";
 import { setupMediaLoader } from "./media-loader";
 import { setupPerfPanel } from "./perf-panel";
 import { setupAudioTab } from "./audio-sidebar";
-import { setupExamples } from "./examples";
+import { setupExamples, type Example } from "./examples";
 import aboutHtml from "./about.html?raw";
 
 const STORAGE_KEY = "picodevil-sidebar";
@@ -35,7 +35,7 @@ export function resolveSidebarOpen(raw: string | null): boolean {
   try { return JSON.parse(raw).open ?? true; } catch { return true; }
 }
 
-export function setupSidebar(isFreshSession = false) {
+export function setupSidebar(isFreshSession: boolean, defaultTab: string | undefined, onExample: (example: Example) => void) {
   const toggle = document.getElementById("sidebar-toggle")!;
   const panel = document.getElementById("sidebar-panel")!;
   const handle = panel.querySelector<HTMLElement>(".resize-handle")!;
@@ -96,19 +96,20 @@ export function setupSidebar(isFreshSession = false) {
   const aboutTab = document.getElementById("tab-about");
   if (aboutTab) aboutTab.innerHTML = aboutHtml;
   const examplesTab = document.getElementById("tab-examples");
-  if (examplesTab) setupExamples(examplesTab);
+  if (examplesTab) setupExamples(examplesTab, onExample);
 
   // Tabs
   const tabs = panel.querySelectorAll<HTMLButtonElement>(".tabs button");
 
   // Restore active tab, overriding the About default (index.html) when stored
-  if (saved.tab) {
+  const startingTab = saved.tab ?? defaultTab;
+  if (startingTab) {
     tabs.forEach((t) => t.classList.remove("active"));
     panel.querySelectorAll<HTMLElement>(".tab-content").forEach((el) => el.classList.remove("active"));
     tabs.forEach((t) => {
-      if (t.dataset.tab === saved.tab) t.classList.add("active");
+      if (t.dataset.tab === startingTab) t.classList.add("active");
     });
-    const tabEl = document.getElementById(`tab-${saved.tab}`);
+    const tabEl = document.getElementById(`tab-${startingTab}`);
     if (tabEl) tabEl.classList.add("active");
   }
 

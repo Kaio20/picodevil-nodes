@@ -23,7 +23,10 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/**", "server/**", "test/**"],
     browser: {
       enabled: true,
-      provider: playwright({ launchOptions: { args: ['--use-gl=angle', '--enable-unsafe-swiftshader'] } }),
+      provider: playwright({ launchOptions: {
+        executablePath: process.env.NODESDEVIL_CHROMIUM,
+        args: ['--use-gl=angle', '--enable-unsafe-swiftshader'],
+      } }),
       instances: [{ browser: "chromium" }],
       headless: true,
       screenshotFailures: false,

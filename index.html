@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>picodevil</title>
+  <title>NodesDevil</title>
 
   <!-- Last-resort error breadcrumb. Inline + classic (not a module) so it is
        installed BEFORE src/main.ts and its import graph evaluate — this catches
@@ -11,11 +11,11 @@
        turning a silent black page into at least one line in the console. -->
   <script>
     window.addEventListener('error', function (e) {
-      console.error('[picodevil] uncaught error:', e.error || e.message,
+      console.error('[NodesDevil] uncaught error:', e.error || e.message,
         e.filename ? '(' + e.filename + ':' + e.lineno + ':' + e.colno + ')' : '');
     });
     window.addEventListener('unhandledrejection', function (e) {
-      console.error('[picodevil] unhandled promise rejection:', e.reason);
+      console.error('[NodesDevil] unhandled promise rejection:', e.reason);
     });
   </script>
   <link rel="icon" href="/favicon.ico" sizes="any">
@@ -23,31 +23,33 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 
-  <meta name="description" content="picodevil is here to help you livecode visuals with videoclips!  let's chop up some videos with patterns!">
+  <meta name="description" content="Build live video patterns with nodes, preview each step, and send the output to a projector.">
 
   <!-- Open Graph / social share -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://picodevil.com/">
-  <meta property="og:title" content="picodevil">
-  <meta property="og:description" content="picodevil is here to help you livecode visuals! let's chop up some videos with patterns!">
-  <meta property="og:image" content="https://picodevil.com/picodevil_default_social.png">
-  <meta property="og:image:type" content="image/png">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="the picodevil live-coding editor: the little devil mascot and the word 'Picodevil' over a pixelated grid of video clips, with pattern code overlaid">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="picodevil">
-  <meta name="twitter:description" content="picodevil is here to help you livecode visuals with videoclips! let's chop up some videos with patterns!">
-  <meta name="twitter:image" content="https://picodevil.com/picodevil_default_social.png">
+  <meta property="og:title" content="NodesDevil">
+  <meta property="og:description" content="Build live video patterns with nodes, preview each step, and send the output to a projector.">
+  <meta property="og:image" content="/picodevil.png">
+  <meta property="og:image:alt" content="The NodesDevil mascot">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="NodesDevil">
+  <meta name="twitter:description" content="Live video patterns with nodes and projection output.">
+  <meta name="twitter:image" content="/picodevil.png">
 
   <link rel="stylesheet" href="/src/fonts.css">
   <link rel="stylesheet" href="/src/style.css">
+  <link rel="stylesheet" href="/src/nodesdevil.css">
   
   <script src="https://cdn.usefathom.com/script.js" data-site="XHMHGDFJ" defer></script>
 </head>
 <body>
   <canvas id="c"></canvas>
   <div id="editor-wrap"></div>
+  <main id="node-editor" hidden></main>
+  <div id="nd-code-bar" hidden>
+    <button class="nd-button" id="nd-show-nodes" type="button">Nodes</button>
+    <button class="nd-button" id="nd-code-output" type="button">Open Output ↗</button>
+  </div>
   <button id="sidebar-toggle">‹</button>
   <div id="sidebar-panel">
     <div class="resize-handle"></div>
