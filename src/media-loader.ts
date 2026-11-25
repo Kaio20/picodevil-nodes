@@ -14,6 +14,7 @@ import { makeThumbCell, cellKey, insertName } from "./thumbs";
 import { ignoreDropClick, liftMediaThumbnail, sidebarDrop } from "./node-sidebar-drag";
 import { makeTextureCatalog } from "./texture-catalog";
 import type { NodeDrop } from "./node-graph";
+import { phosphorIcon } from "./icons";
 
 type ViewMode = "edit" | "view";
 const FLIP_MS = 300;
@@ -61,15 +62,6 @@ function measureFlipRects(container: HTMLElement): Map<string, DOMRect> {
   });
   return m;
 }
-
-/** FLIP: fly each incoming thumbnail from where its counterpart sat in the old
- *  pane to its new spot, scaling between the grid (120×90) and row (40×30). */
-// Toggle icons (inline SVG so nothing is fetched at runtime; stroke inherits the
-// button's currentColor). Feather/Lucide "grid" and "edit-3", 24×24 stroke paths.
-const ICON_GRID =
-  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>';
-const ICON_EDIT =
-  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
 
 /** Curated starter media, hosted on the static CDN (sources.json import/export shape). */
 const DEFAULTS_URL = "https://videoclip.picodevil.com/sources.json";
@@ -419,7 +411,7 @@ function createMediaTab(container: HTMLElement, collection: MediaCollection) {
       setViewMode(goEdit ? "edit" : "view");
     });
     toggle.classList.add("vid-view-toggle");
-    toggle.innerHTML = goEdit ? ICON_EDIT : ICON_GRID;
+    toggle.append(phosphorIcon(goEdit ? "pencil-simple-line" : "grid-four"));
     toggle.title = goEdit ? "Switch to edit view" : "Switch to grid view";
     toggle.setAttribute("aria-label", toggle.title);
     leftGroup.appendChild(toggle);
@@ -566,45 +558,49 @@ export function entryRenderKey(entry: MediaEntry): string {
   ].join("\0");
 }
 
-/** Indicator text for an in-progress upload or download, or null when the entry
- *  isn't uploading/downloading. Single source of truth for the edit-row indicator
- *  (`text`) and the compact grid-cell badge (`short`). */
-function progressText(entry: MediaEntry): { text: string; short: string; title: string; small: boolean } | null {
+/** Shared progress state for the edit row and the compact grid badge. */
+function mediaProgress(entry: MediaEntry): { text: string; short: string; title: string; icon: string } | null {
   if (entry.uploading) {
     const pct = entry.uploadProgress != null ? Math.round(entry.uploadProgress * 100) : null;
     return pct != null && pct < 100
-      ? { text: `↑${pct}%`, short: `↑${pct}%`, title: "Uploading…", small: false }
-      : { text: "⚙", short: "⚙", title: "Transcoding…", small: false };
+      ? { text: `${pct}%`, short: `${pct}%`, title: "Uploading…", icon: "upload-simple" }
+      : { text: "", short: "", title: "Transcoding…", icon: "gear" };
   }
   if (entry.downloading) {
     // Two-phase YouTube progress: "downloading: 45%" then "transcoding: 13%".
-    // Falls back to ⏳ before the first /ready poll reports a phase.
+    // Show an hourglass until the first /ready poll reports a phase.
     if (entry.phase && entry.phasePercent != null) {
       const label = entry.phase === "transcode" ? "transcoding" : "downloading";
       const pct = Math.round(entry.phasePercent * 100);
-      const glyph = entry.phase === "transcode" ? "⚙" : "⬇";
-      return { text: `${label}: ${pct}%`, short: `${glyph}${pct}%`, title: `${label} in progress`, small: false };
+      const icon = entry.phase === "transcode" ? "gear" : "download-simple";
+      return { text: `${label}: ${pct}%`, short: `${pct}%`, title: `${label} in progress`, icon };
     }
-    return { text: "⏳", short: "⏳", title: "", small: true };
+    return { text: "", short: "", title: "Waiting for download…", icon: "hourglass" };
   }
   return null;
+}
+
+function showProgress(el: HTMLElement, icon: string, text: string, title: string) {
+  if (el.textContent !== text || !el.firstElementChild?.classList.contains(`ph-${icon}`)) {
+    el.replaceChildren(phosphorIcon(icon), text);
+  }
+  el.title = title;
 }
 
 /** Refresh just the progress indicator's text/title in place, without rebuilding
  *  the row — so typing in the row's inputs isn't interrupted by progress ticks. */
 function updateRowProgress(row: HTMLElement, entry: MediaEntry) {
   const indicator = row.querySelector<HTMLElement>(".vid-indicator");
-  const p = progressText(entry);
+  const p = mediaProgress(entry);
   if (!indicator || !p) return;
-  if (indicator.textContent !== p.text) indicator.textContent = p.text;
-  indicator.title = p.title;
+  showProgress(indicator, p.icon, p.text, p.title);
 }
 
 /** Show/refresh (or remove) the compact progress badge in a grid cell's
  *  bottom-right corner. Managed here rather than in makeThumbCell so the cell
  *  isn't rebuilt each progress tick (which would reload its <img>). */
 function updateCellProgress(cell: HTMLElement, entry: MediaEntry) {
-  const p = progressText(entry);
+  const p = mediaProgress(entry);
   let badge = cell.querySelector<HTMLElement>(".thumb-progress");
   if (!p) { badge?.remove(); return; }
   if (!badge) {
@@ -613,8 +609,7 @@ function updateCellProgress(cell: HTMLElement, entry: MediaEntry) {
     // Into the flex bottom bar so the label shrinks to make room (no overlap).
     (cell.querySelector(".thumb-bar") ?? cell).appendChild(badge);
   }
-  if (badge.textContent !== p.short) badge.textContent = p.short;
-  badge.title = p.title;
+  showProgress(badge, p.icon, p.short, p.title);
 }
 
 function reconcileList(list: HTMLElement, entries: MediaEntry[]) {
@@ -870,16 +865,16 @@ function makeRow(entry: MediaEntry): HTMLElement {
   thumb.addEventListener("click", () => insertName(entry.name));
   if (isStream) {
     const active = isStreamActive(entry.name);
-    const dot = document.createElement("span");
-    dot.className = "vid-status-dot";
-    dot.style.background = active ? "#4c4" : "#666"; // dynamic: active vs disconnected
-    dot.title = active ? "Active" : "Disconnected";
+    const status = active ? "Active" : "Disconnected";
+    const dot = phosphorIcon(active ? "record" : "circle", "vid-status-dot");
+    dot.style.color = active ? "#4c4" : "#666";
+    thumb.title = status;
     thumb.appendChild(dot);
   } else if (entry.unavailable) {
     // Source failed to load/decode — show a warning glyph instead of a thumbnail.
     const warn = document.createElement("span");
     warn.className = "vid-thumb-warn";
-    warn.textContent = "⚠";
+    warn.append(phosphorIcon("warning"));
     warn.style.color = "#e8a13a"; // dynamic state — kept inline like the stream dot
     warn.style.fontSize = "18px";
     warn.title = "Won't play — couldn't decode this source. It may be an unsupported format (e.g. 10-bit HEVC from an iPhone), corrupt, or offline.";
@@ -951,19 +946,18 @@ function makeRow(entry: MediaEntry): HTMLElement {
     });
     row.appendChild(urlInput);
 
-    // Status indicators. Progress text comes from progressText() so the initial
+    // Status indicators. Progress comes from mediaProgress() so the initial
     // build and the in-place updateRowProgress() refresh never diverge.
-    const progress = progressText(entry);
+    const progress = mediaProgress(entry);
     if (progress) {
       const indicator = document.createElement("span");
       indicator.className = entry.downloading ? "vid-indicator dl" : "vid-indicator";
-      indicator.textContent = progress.text;
-      indicator.title = progress.title;
-      if (progress.small) indicator.style.fontSize = "16px";
+      showProgress(indicator, progress.icon, progress.text, progress.title);
       row.appendChild(indicator);
     } else if (entry.error) {
       const retryBtn = document.createElement("button");
-      retryBtn.textContent = "↻";
+      retryBtn.append(phosphorIcon("arrow-clockwise"));
+      retryBtn.setAttribute("aria-label", `Retry ${entry.name}`);
       retryBtn.title = entry.error;
       retryBtn.className = "vid-btn-retry";
       retryBtn.addEventListener("click", () => {
@@ -980,7 +974,8 @@ function makeRow(entry: MediaEntry): HTMLElement {
 
   // Delete button
   const delBtn = document.createElement("button");
-  delBtn.textContent = "×";
+  delBtn.append(phosphorIcon("x"));
+  delBtn.setAttribute("aria-label", `Remove ${entry.name}`);
   delBtn.className = "vid-btn-delete";
   delBtn.addEventListener("click", () => {
     if (isStream) removeStream(entry.name);

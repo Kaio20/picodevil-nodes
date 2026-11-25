@@ -34,7 +34,7 @@ export function setupPerfPanel(container: HTMLElement) {
         <div class="perf-head">render</div>
         <div class="perf-row"><span class="perf-label">screens</span><span class="perf-value" id="perf-screens">—</span></div>
         <div class="perf-row"><span class="perf-label">events/frame</span><span class="perf-value" id="perf-events">—</span></div>
-        <div class="perf-row"><span class="perf-label">auto FBOs</span><span class="perf-value" id="perf-autofbos">—</span></div>
+        <div class="perf-row"><span class="perf-label">auto FBOs</span><span class="perf-value"><span id="perf-autofbos">—</span><span id="perf-autofbo-warning" hidden> <span class="ph ph-warning" aria-hidden="true"></span><span id="perf-autofbo-violations"></span></span></span></div>
       </div>
     </div>
   `;
@@ -43,6 +43,9 @@ export function setupPerfPanel(container: HTMLElement) {
   const gctx = graphCanvas.getContext("2d")!;
   const heapCanvas = container.querySelector("#perf-heap-graph") as HTMLCanvasElement;
   const hctx = heapCanvas.getContext("2d")!;
+  const fboValue = container.querySelector<HTMLElement>("#perf-autofbos")!;
+  const fboWarning = container.querySelector<HTMLElement>("#perf-autofbo-warning")!;
+  const fboViolations = container.querySelector<HTMLElement>("#perf-autofbo-violations")!;
 
   function percentile(arr: number[], p: number): number {
     if (arr.length === 0) return 0;
@@ -245,10 +248,11 @@ export function setupPerfPanel(container: HTMLElement) {
       (container.querySelector("#perf-drift-seeks-300f") as HTMLElement).textContent = String(info.driftSeeksPer300f);
       (container.querySelector("#perf-screens") as HTMLElement).textContent = String(info.screensCount);
       (container.querySelector("#perf-events") as HTMLElement).textContent = String(info.eventsPerFrame);
-      (container.querySelector("#perf-autofbos") as HTMLElement).textContent =
-        (info.autoFBOCount > 0 || info.autoFBOBytes > 0
+      fboValue.textContent = info.autoFBOCount > 0 || info.autoFBOBytes > 0
           ? `${info.autoFBOCount} (${fmtBytes(info.autoFBOBytes)})`
-          : "0") + (info.modSkipViolations > 0 ? ` ⚠${info.modSkipViolations}` : "");
+          : "0";
+      fboWarning.hidden = info.modSkipViolations === 0;
+      if (!fboWarning.hidden) fboViolations.textContent = String(info.modSkipViolations);
     }
   }
 

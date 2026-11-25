@@ -2,6 +2,7 @@ import { fft, getFftState } from './fft-audio';
 import { getAllStreamStates } from './stream-manager';
 import { attachNodeDrag } from './node-sidebar-drag';
 import { fftBands } from './node-graph';
+import { phosphorIcon } from './icons';
 
 function btn(text: string, onClick: () => void): HTMLButtonElement {
   const b = document.createElement('button');
@@ -105,7 +106,7 @@ export function setupAudioTab(container: HTMLElement): void {
   const statusEl = document.createElement('div');
   statusEl.className = 'audio-status';
   const state = getFftState();
-  statusEl.textContent = state.active ? '● Active' : '○ Inactive — access fft in a pattern to start';
+  showActivity(statusEl, state.active, 'Inactive — access fft in a pattern to start');
   srcSection.appendChild(statusEl);
   container.appendChild(srcSection);
 
@@ -142,10 +143,14 @@ export function setupAudioTab(container: HTMLElement): void {
   startMeterLoop(meterCanvas, statusEl);
 }
 
+function showActivity(el: HTMLElement, active: boolean, inactiveText = 'Inactive'): void {
+  el.replaceChildren(phosphorIcon(active ? 'record' : 'circle'), active ? ' Active' : ` ${inactiveText}`);
+}
+
 function showStatus(el: HTMLElement, msg: string, isError = false): void {
   el.textContent = msg;
   el.style.color = isError ? '#c44' : '#6a6';
-  if (!isError) setTimeout(() => { el.style.color = '#666'; el.textContent = '● Active'; }, 3000);
+  if (!isError) setTimeout(() => { el.style.color = '#666'; showActivity(el, true); }, 3000);
 }
 
 async function renderDevices(section: HTMLElement): Promise<void> {
@@ -200,9 +205,7 @@ function renderScreenStreams(section: HTMLElement, statusEl: HTMLElement): void 
     const row = document.createElement('div');
     row.className = 'audio-stream-row';
     row.style.cursor = hasTracks ? 'pointer' : 'default';
-    const dot = document.createElement('span');
-    dot.textContent = hasTracks ? '◎' : '○';
-    dot.className = 'audio-stream-dot';
+    const dot = phosphorIcon(hasTracks ? 'record' : 'circle', 'audio-stream-dot');
     dot.style.color = hasTracks ? '#8a8' : '#555';
     const name = document.createElement('span');
     name.textContent = s.name + (hasTracks ? '' : ' (no audio)');
@@ -233,7 +236,7 @@ function startMeterLoop(canvas: HTMLCanvasElement, statusEl: HTMLElement): void 
     // Update status text and colour when active state changes
     if (state.active !== lastActiveState) {
       lastActiveState = state.active;
-      statusEl.textContent = state.active ? '● Active' : '○ Inactive';
+      showActivity(statusEl, state.active);
       statusEl.style.color = state.active ? '#6a6' : '#666';
     }
 

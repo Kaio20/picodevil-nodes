@@ -2,16 +2,20 @@ import { clampUnit, rgbHex, type ColorValue } from "./color-value";
 import { gradientPixels, gradientResolution, gradientSampler, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
 import type { RampStop } from "./node-graph";
 import { trackPointerDrag } from "./node-number-input";
+import { nodeChoiceField } from "./node-choice-field";
+import { phosphorIcon } from "./icons";
 
 export function gradientField(
   stops: readonly RampStop[], initialColors: ReadonlyMap<string, ColorValue>, interpolation: Gradient["interpolation"],
   change: (stops: readonly RampStop[], active: string, added?: ColorValue) => void,
   changeInterpolation: (interpolation: Gradient["interpolation"]) => void,
+  previewInterpolation: (interpolation?: Gradient["interpolation"]) => void,
 ) {
   let positions = stops;
   let active = stops[0].id;
   const colors = new Map(initialColors);
   let wiredColors: Map<string, ColorValue> | undefined;
+  let hoveredInterpolation: Gradient["interpolation"] | undefined;
 
   const field = document.createElement("div");
   field.className = "nd-gradient";
@@ -24,22 +28,30 @@ export function gradientField(
     const button = document.createElement("button");
     button.type = "button";
     button.className = "nd-button";
-    button.textContent = icon;
+    button.append(phosphorIcon(icon));
     button.setAttribute("aria-label", label);
     button.dataset.tooltip = label;
     return button;
   };
-  const add = button("Add color stop", "+");
-  const remove = button("Remove color stop", "−");
+  const add = button("Add color stop", "plus");
+  const remove = button("Remove color stop", "minus");
   add.disabled = stops.length >= maxGradientStops;
   remove.disabled = stops.length <= 1;
 
-  const select = document.createElement("select");
-  select.className = "nd-field";
-  select.setAttribute("aria-label", "Gradient interpolation");
-  select.append(...rgbInterpolations.map(value => new Option(value)));
-  select.value = interpolation;
-  toolbar.append(add, remove, select);
+  const picker = nodeChoiceField<Gradient["interpolation"]>(
+    rgbInterpolations.map(value => [value, value]), interpolation, "Gradient interpolation",
+    value => {
+      interpolation = value;
+      draw();
+      changeInterpolation(value);
+    },
+    value => {
+      hoveredInterpolation = value;
+      draw();
+      previewInterpolation(value);
+    },
+  );
+  toolbar.append(add, remove, picker.field);
 
   const track = document.createElement("div");
   track.className = "nd-gradient-track";
@@ -53,7 +65,7 @@ export function gradientField(
 
   const colorAt = (id: string) => wiredColors?.get(id) ?? colors.get(id)!;
   const gradient = (): Gradient => ({
-    interpolation,
+    interpolation: hoveredInterpolation ?? interpolation,
     stops: positions.map(({ id, position }) => {
       const { hex, alpha } = colorAt(id);
       return { position, color: hex, alpha };
@@ -136,11 +148,6 @@ export function gradientField(
     const index = stops.findIndex(stop => stop.id === active);
     const next = stops.filter(stop => stop.id !== active);
     change(next, next[Math.min(index, next.length - 1)].id);
-  });
-  select.addEventListener("change", () => {
-    interpolation = select.value as Gradient["interpolation"];
-    draw();
-    changeInterpolation(interpolation);
   });
   draw();
   return {

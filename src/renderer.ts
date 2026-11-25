@@ -770,6 +770,7 @@ export class FrameRenderer {
       croph: ev.croph ?? 1,
       fit: ev.objectfit ?? (ev._type === 'text' ? 'none' : ev._type === 'qr' ? 'contain' : ev._type === 'gradient' ? 'fill' : 'cover'),
       alpha,
+      opacityFieldSrc: ev.opacityFieldSrc,
       blend: ev.blend !== undefined ? String(ev.blend) : 'source-over',
       rotateZ,
       rotateXScale,
@@ -811,6 +812,14 @@ export class FrameRenderer {
   private drawFrame(allEvents: FrameEvent[], t: number, cps: number, frameWallTime: number, videoFrameProcessed: Set<VideoEl>, skipFboOnly: boolean): void {
     for (const fe of allEvents) {
       if (skipFboOnly && fe.ev._fboOnly) continue;
+      if (fe.ev._type === 'pixelField') {
+        try {
+          this.renderer.drawPixelRaster?.(fe.ev.raster);
+        } catch (e) {
+          warn(`Pixel field draw error: ${e instanceof Error ? e.message : e}`);
+        }
+        continue;
+      }
       // `.render()` tiles carry bake segments — expand into an FBO chain in place.
       const segs = fe.ev._bakeSegments;
       if (Array.isArray(segs) && segs.length > 0) {
@@ -910,7 +919,7 @@ export class FrameRenderer {
     // Base source, geometry stripped so it FILLS the FBO (which represents the
     // tile's frame — or the whole frame when a post-bake crop will slice it).
     const baseRest: Record<string, any> = { ...rest };
-    for (const k of ['_bakeSegments', 'x', 'y', 'width', 'height', 'scaleX', 'scaleY',
+    for (const k of ['_bakeSegments', 'opacityFieldSrc', 'x', 'y', 'width', 'height', 'scaleX', 'scaleY',
                      'rotateZ', 'rotateX', 'rotateY', 'rotate', 'rotateAxis']) {
       delete baseRest[k];
     }
@@ -951,7 +960,7 @@ export class FrameRenderer {
       _type: 'pattern', src: last,
       x: cx, y: cy, width: wFrac, height: hFrac,
       objectfit: 'fill',
-      alpha: ev.alpha, blend: ev.blend,
+      alpha: ev.alpha, opacityFieldSrc: ev.opacityFieldSrc, blend: ev.blend,
       ...topEffects,
     };
     if (ev.rotateZ !== undefined) finalEv.rotateZ = ev.rotateZ;

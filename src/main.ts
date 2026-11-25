@@ -232,7 +232,7 @@ function frame() {
   );
 
   flushWarnings();
-  previews.draw(nodeEditor.graph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, canvas.width / canvas.height);
+  previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, canvas.width / canvas.height, nodeEditor.previewNode);
 }
 document.addEventListener("visibilitychange", scheduleFrame);
 

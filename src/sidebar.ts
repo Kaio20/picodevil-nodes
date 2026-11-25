@@ -37,9 +37,18 @@ export function resolveSidebarOpen(raw: string | null): boolean {
 
 export function setupSidebar(isFreshSession: boolean, defaultTab: string | undefined, onExample: (example: Example) => void) {
   const toggle = document.getElementById("sidebar-toggle")!;
+  const toggleIcon = toggle.querySelector(".ph")!;
   const panel = document.getElementById("sidebar-panel")!;
   const handle = panel.querySelector<HTMLElement>(".resize-handle")!;
   const saved = loadState();
+
+  const applyOpen = (open: boolean) => {
+    panel.classList.toggle("open", open);
+    toggle.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    toggleIcon.classList.toggle("ph-caret-left", !open);
+    toggleIcon.classList.toggle("ph-caret-right", open);
+  };
 
   // Apply open state. index.html renders the panel closed (so nothing half-open
   // flashes before JS runs); open it here for a first visit / untouched reload.
@@ -47,9 +56,7 @@ export function setupSidebar(isFreshSession: boolean, defaultTab: string | undef
   // instead of sliding on load — re-enabled below so later user toggles animate.
   const open = resolveSidebarOpen(localStorage.getItem(STORAGE_KEY));
   panel.style.transition = "none";
-  panel.classList.toggle("open", open);
-  toggle.classList.toggle("open", open);
-  toggle.textContent = open ? "›" : "‹";
+  applyOpen(open);
   void panel.offsetWidth; // force reflow so "none" applies before restoring
   panel.style.transition = "";
 
@@ -59,9 +66,7 @@ export function setupSidebar(isFreshSession: boolean, defaultTab: string | undef
   }
 
   const setOpen = (open: boolean) => {
-    panel.classList.toggle("open", open);
-    toggle.classList.toggle("open", open);
-    toggle.textContent = open ? "›" : "‹";
+    applyOpen(open);
     saveState({ open });
   };
   toggle.addEventListener("click", () => setOpen(!panel.classList.contains("open")));

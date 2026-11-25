@@ -36,7 +36,7 @@ export type MediaEntry = {
   /**
    * Set when the source itself failed to load/decode — an unsupported codec
    * (e.g. a dropped 10-bit HEVC clip), a corrupt file, or a dead URL. Detected
-   * when the thumbnail probe can't read a frame. Surfaced as a ⚠ in the media
+   * when the thumbnail probe can't read a frame. Surfaced as a warning in the media
    * list instead of a thumbnail, and cleared if the source later loads.
    */
   unavailable?: boolean;
@@ -538,7 +538,7 @@ export function uploadToServer(name: string, file: File, serverBase?: string): P
           if (oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
           generateThumbnail(current);
         } else {
-          // Transcoding in progress — keep uploading=true (shows ⚙), poll for completion
+          // Transcoding in progress — keep the indicator visible and poll for completion
           save();
           if (oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
           const stem = data.url.split('/').pop()?.replace(/\.mp4$/, '') ?? '';

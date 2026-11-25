@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inputsFor, insertNodeOnEdge, isVariableSetter, keepCompatibleEdges, makeNode, outputsFor, referenceNode, starterGraph, valueTypes, withEdge, type Graph } from "./node-graph";
+import { cableInput, inputType, inputsFor, insertNodeOnEdge, isAutomaticConversion, isVariableSetter, keepCompatibleEdges, makeNode, outputsFor, outputType, pruneRoutingNodes, referenceNode, starterGraph, valueTypes, withConvertedEdge, withEdge, type Graph } from "./node-graph";
 import { compileLiveGraph } from "./node-runtime";
 import { initRegistry, snapshotRegistry } from "./pattern-registry";
 import { loadNodes, saveNodes } from "./node-session";
@@ -11,6 +11,266 @@ import { createVideoPoolManager } from "./video-pool-manager";
 import { readPixel, withRenderer } from "./webgl-test-helpers";
 
 describe("NodesDevil graph", () => {
+  it("uses ramp luminance as per-pixel Float values through math and variables to drive Opacity", () => {
+    initRegistry();
+    const ramp = makeNode("colorRamp", 0, 0);
+    const math = makeNode("expression", 0, 0, { mode: "multiply" });
+    const amount = makeNode("numberPattern", 0, 0, { pattern: "0.5 0.25" });
+    const set = makeNode("variable", 0, 0, { variable: "mask" });
+    const get = makeNode("variable", 0, 0, { variable: "mask" });
+    const color = makeNode("color", 0, 0, { color: { hex: "#ff0000", alpha: 1 } });
+    const opacity = makeNode("alpha", 0, 0);
+    const tempo = makeNode("tempo", 0, 0);
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [ramp, math, amount, set, get, color, opacity, tempo, output],
+      variables: [{ id: "mask", name: "Mask", type: "number" }],
+      edges: [
+        { from: amount.id, to: math.id, input: "b" },
+        { from: math.id, to: set.id, input: "value" },
+        { from: color.id, to: opacity.id, input: "image" },
+        { from: get.id, to: opacity.id, input: "value" },
+        { from: opacity.id, to: output.id, input: "image" },
+      ],
+    };
+    const connected = withConvertedEdge(graph, { from: ramp.id, to: math.id, input: "a" });
+    expect(connected).toBeDefined();
+    expect(keepCompatibleEdges(connected!)).toEqual(connected);
+    expect(withConvertedEdge(connected!, { from: get.id, to: tempo.id, input: "value" })).toBeUndefined();
+    withRenderer((renderer, canvas) => {
+      const pool = createVideoPoolManager({ resolveMediaUrl: name => name });
+      const frames = new FrameRenderer(renderer, pool, createMetrics());
+      const { screens, namedScreens } = compileLiveGraph(connected!);
+      frames.render(screens, namedScreens, 0.25, 1, 0.25);
+      expect(Math.abs(readPixel(canvas, 10, 50)[3] - 13)).toBeLessThanOrEqual(2);
+      expect(Math.abs(readPixel(canvas, 90, 50)[3] - 115)).toBeLessThanOrEqual(2);
+      frames.render(screens, namedScreens, 0.75, 1, 0.75);
+      expect(Math.abs(readPixel(canvas, 90, 50)[3] - 58)).toBeLessThanOrEqual(2);
+    });
+  });
+
+  it("uses per-pixel Factor values for the ramp's Image and Alpha outputs", () => {
+    initRegistry();
+    const factor = makeNode("colorRamp", 0, 0);
+    const ramp = makeNode("colorRamp", 0, 0, {
+      "stop-start": { hex: "#ff0000", alpha: 0.25 }, "stop-end": { hex: "#0000ff", alpha: 1 },
+    });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [factor, ramp, output], variables: [], edges: [{ from: ramp.id, to: output.id, input: "image" }],
+    };
+    const colored = withConvertedEdge(graph, { from: factor.id, to: ramp.id, input: "factor" })!;
+    const grayscale = withConvertedEdge(colored, { from: ramp.id, output: "alpha", to: output.id, input: "image" })!;
+    withRenderer((renderer, canvas) => {
+      const frames = new FrameRenderer(renderer, createVideoPoolManager({ resolveMediaUrl: name => name }), createMetrics());
+      const render = (graph: Graph) => {
+        const { screens, namedScreens } = compileLiveGraph(graph);
+        frames.render(screens, namedScreens, 0.5, 1, 0.5);
+      };
+      render(colored);
+      const [leftR, , leftB, leftA] = readPixel(canvas, 10, 50);
+      const [rightR, , rightB, rightA] = readPixel(canvas, 90, 50);
+      expect(leftR).toBeGreaterThan(leftB);
+      expect(rightB).toBeGreaterThan(rightR);
+      expect(rightA).toBeGreaterThan(leftA);
+      render(grayscale);
+      const [r, g, b, a] = readPixel(canvas, 10, 50);
+      expect([g, b, a]).toEqual([r, r, 255]);
+      expect(Math.abs(r - leftA)).toBeLessThanOrEqual(2);
+    });
+  });
+
+  it("reads the ramp's stop alpha as a mask alongside a Matte", () => {
+    initRegistry();
+    const ramp = makeNode("colorRamp", 0, 0, {
+      "stop-start": { hex: "#000000", alpha: 0 }, "stop-end": { hex: "#000000", alpha: 1 },
+    });
+    const image = makeNode("color", 0, 0, { color: { hex: "#ff0000", alpha: 1 } });
+    const mask = makeNode("color", 0, 0, { color: { hex: "#ffffff", alpha: 0.5 } });
+    const matte = makeNode("matte", 0, 0);
+    const opacity = makeNode("alpha", 0, 0);
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [ramp, image, mask, matte, opacity, output], variables: [], edges: [
+        { from: image.id, to: matte.id, input: "image" },
+        { from: mask.id, to: matte.id, input: "texture" },
+        { from: matte.id, to: opacity.id, input: "image" },
+        { from: ramp.id, output: "mask", to: opacity.id, input: "value" },
+        { from: opacity.id, to: output.id, input: "image" },
+      ],
+    };
+    withRenderer((renderer, canvas) => {
+      const frames = new FrameRenderer(renderer, createVideoPoolManager({ resolveMediaUrl: name => name }), createMetrics());
+      const { screens, namedScreens } = compileLiveGraph(graph);
+      frames.render(screens, namedScreens, 0.5, 1, 0.5);
+      expect(Math.abs(readPixel(canvas, 10, 50)[3] - 13)).toBeLessThanOrEqual(2);
+      expect(Math.abs(readPixel(canvas, 90, 50)[3] - 115)).toBeLessThanOrEqual(2);
+    });
+  });
+
+  it("converts a String to an image and parses a wired number from a String", () => {
+    initRegistry();
+    const title = makeNode("constant", 0, 0, { mode: "text", value: "Hello world" });
+    const number = makeNode("constant", 0, 0, { mode: "text", value: " 64.5 " });
+    const tempo = makeNode("tempo", 0, 0);
+    const output = makeNode("output", 0, 0);
+    let graph: Graph = { nodes: [title, number, tempo, output], variables: [], edges: [] };
+    graph = withConvertedEdge(graph, { from: title.id, to: output.id, input: "image" })!;
+    graph = withConvertedEdge(graph, { from: number.id, to: tempo.id, input: "value" })!;
+    const compiled = compileLiveGraph(graph);
+    expect(compiled.screens[0].queryArc(0, 0)[0].value).toMatchObject({ _type: "text", text: "Hello world" });
+    expect(compiled.tempo).toBe(64.5);
+  });
+
+  it("keeps automatic conversions while either end is connected", () => {
+    initRegistry();
+    const graph = starterGraph();
+    const signal = makeNode("numberPattern", 0, 0, { pattern: "0 -2.5" });
+    const set = makeNode("variable", 0, 0, { variable: "flag" });
+    const tempo = makeNode("tempo", 0, 0, { value: 48 });
+    const text = makeNode("text", 0, 0);
+    graph.nodes.push(signal, set, tempo, text);
+    graph.variables.push({ id: "flag", name: "Flag", type: "boolean" });
+    const first = { from: signal.id, to: set.id, input: "value" };
+    let connected = withConvertedEdge(graph, first, () => ({ x: 240, y: 120 }))!;
+    expect(withConvertedEdge(connected, first)).toBe(connected);
+    connected = withConvertedEdge(connected, { from: set.id, to: tempo.id, input: "value" })!;
+    connected = withConvertedEdge(connected, { from: signal.id, to: text.id, input: "content" })!;
+    const converters = connected.nodes.filter(isAutomaticConversion);
+    expect(converters.map(node => node.data.mode)).toEqual(["floatToBoolean", "booleanToFloat", "floatToString"]);
+    expect(converters[0]).toMatchObject({ x: 240, y: 120 });
+    expect(keepCompatibleEdges(connected)).toEqual(connected);
+    expect(withConvertedEdge(connected, { from: text.id, to: tempo.id, input: "value" })).toBeUndefined();
+    const compiled = compileLiveGraph(connected);
+    if (typeof compiled.tempo === "number") throw new Error("Expected a Float signal");
+    expect([0.25, 0.75].map(cycle => compiled.tempo.queryArc(cycle, cycle)[0].value)).toEqual([0, 1]);
+    const cut = pruneRoutingNodes({ ...connected, edges: connected.edges.filter(edge => edge.to !== converters[1].id) });
+    expect(cut.nodes).toContain(converters[1]);
+    expect(inputType(cut, converters[1], "boolean")).toBeUndefined();
+    expect(keepCompatibleEdges(cut)).toEqual(cut);
+    expect(compileLiveGraph(cut).tempo).toBe(48);
+    const detached = pruneRoutingNodes({ ...cut, edges: cut.edges.filter(edge => edge.from !== converters[1].id) });
+    expect(detached.nodes).not.toContain(converters[1]);
+  });
+
+  it("reassigns a conversion output after its last outgoing cable is disconnected", () => {
+    const graph = starterGraph();
+    const number = makeNode("constant", 0, 0);
+    const text = makeNode("text", 0, 0);
+    const first = makeNode("variable", 0, 0, { variable: "first" });
+    const second = makeNode("variable", 0, 0, { variable: "second" });
+    graph.nodes.push(number, text, first, second);
+    graph.variables.push({ id: "first", name: "First", type: "boolean" }, { id: "second", name: "Second", type: "boolean" });
+    const connected = withConvertedEdge(graph, { from: number.id, to: first.id, input: "value" })!;
+    const converter = connected.nodes.find(isAutomaticConversion)!;
+    const branched = withEdge(connected, { from: converter.id, to: second.id, input: "value" })!;
+    const cut = (current: Graph, target: string) => pruneRoutingNodes({
+      ...current, edges: current.edges.filter(edge => edge.from !== converter.id || edge.to !== target),
+    });
+    const single = cut(branched, first.id);
+    expect(outputType(single, converter)).toBe("boolean");
+    expect(withEdge(single, { from: converter.id, to: text.id, input: "content" })).toBeUndefined();
+    const loose = cut(single, second.id);
+    expect(loose.nodes).toContain(converter);
+    expect(inputsFor(loose, converter)[0].type).toBe("number");
+    expect(outputType(loose, converter)).toBeUndefined();
+    expect(keepCompatibleEdges(loose)).toEqual(loose);
+    const reassigned = withEdge(loose, { from: converter.id, to: text.id, input: "content" })!;
+    const updated = reassigned.nodes.find(node => node.id === converter.id)!;
+    expect(updated.data.mode).toBe("floatToString");
+    expect(outputType(reassigned, updated)).toBe("text");
+    expect(reassigned.nodes).toHaveLength(loose.nodes.length);
+    expect(keepCompatibleEdges(reassigned)).toEqual(reassigned);
+  });
+
+  it("infers the input of a new conversion and retains a selected mode for its matching target", () => {
+    const graph = starterGraph();
+    const pending = makeNode("convert", 0, 0);
+    const alpha = makeNode("convert", 0, 0, { mode: "imageAlphaToFloat" });
+    const source = makeNode("constant", 0, 0, { mode: "text" });
+    const opacity = makeNode("alpha", 0, 0);
+    graph.nodes.push(pending, alpha, source, opacity);
+    expect(inputType(graph, pending, "float")).toBeUndefined();
+    expect(outputType(graph, pending)).toBeUndefined();
+    expect(outputType(graph, alpha)).toBeUndefined();
+    const wired = withEdge(graph, { from: source.id, to: pending.id, input: "float" })!;
+    const updated = wired.nodes.find(node => node.id === pending.id)!;
+    expect(inputsFor(wired, updated)[0].type).toBe("text");
+    expect(wired.edges.at(-1)?.input).toBe("text");
+    expect(outputType(wired, updated)).toBeUndefined();
+    const chosen = withEdge(wired, { from: alpha.id, to: opacity.id, input: "value" })!;
+    expect(chosen.nodes.find(node => node.id === alpha.id)?.data.mode).toBe("imageAlphaToFloat");
+  });
+
+  it("binds or reassigns a neutral input while keeping the wired output", () => {
+    initRegistry();
+    const graph = starterGraph();
+    const [image] = graph.nodes;
+    const pending = makeNode("convert", 0, 0);
+    const source = makeNode("constant", 0, 0, { mode: "text", value: "64" });
+    const boolean = makeNode("constant", 0, 0, { mode: "boolean", value: true });
+    const tempo = makeNode("tempo", 0, 0, { value: 48 });
+    graph.nodes.push(pending, source, boolean, tempo);
+    const outgoing = { from: pending.id, to: tempo.id, input: "value" };
+    const outputFirst = withEdge(graph, outgoing)!;
+    const provisional = outputFirst.nodes.find(node => node.id === pending.id)!;
+    const input = inputsFor(outputFirst, provisional)[0].id;
+    expect(inputType(outputFirst, provisional, input)).toBeUndefined();
+    expect(outputType(outputFirst, provisional)).toBe("number");
+    expect(compileLiveGraph(outputFirst).tempo).toBe(48);
+    expect(withConvertedEdge(outputFirst, { from: image.id, to: pending.id, input })).toBeUndefined();
+    const wired = withConvertedEdge(outputFirst, { from: source.id, to: pending.id, input })!;
+    const updated = wired.nodes.find(node => node.id === pending.id)!;
+    expect(inputType(wired, updated, "text")).toBe("text");
+    expect(outputType(wired, updated)).toBe("number");
+    expect(wired.nodes).toHaveLength(graph.nodes.length);
+    expect(keepCompatibleEdges(wired)).toEqual(wired);
+    expect(compileLiveGraph(wired).tempo).toBe(64);
+    const detached = { ...wired, edges: wired.edges.filter(edge => edge.to !== pending.id) };
+    const reassigned = withEdge(detached, { from: boolean.id, to: pending.id, input: "text" })!;
+    const converted = reassigned.nodes.find(node => node.id === pending.id)!;
+    expect(inputType(reassigned, converted, "boolean")).toBe("boolean");
+    expect(reassigned.edges).toContain(outgoing);
+  });
+
+  it("routes a named output through junctions and uses the input fallback when the source is loose", () => {
+    initRegistry();
+    const graph = starterGraph();
+    const ramp = makeNode("colorRamp", 0, 0, { "stop-start": { hex: "#ffffff", alpha: 0.5 }, factor: 0 });
+    const first = makeNode("junction", 0, 0, { type: "number" });
+    const second = makeNode("junction", 0, 0, { type: "number" });
+    const tempo = makeNode("tempo", 0, 0, { value: 45 });
+    graph.nodes.push(ramp, first, second, tempo);
+    const source = { from: ramp.id, output: "alpha", to: first.id, input: cableInput };
+    graph.edges.push(source, { from: first.id, to: second.id, input: cableInput }, { from: second.id, to: tempo.id, input: "value" });
+    expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    expect(withEdge(graph, { from: second.id, to: first.id, input: cableInput })).toBeUndefined();
+    const signal = compileLiveGraph(graph).tempo;
+    expect(typeof signal === "number" ? signal : signal.queryArc(0, 1)[0].value).toBe(0.5);
+
+    const loose = makeNode("cableEnd", 0, 0, { type: "number", side: "source" });
+    const disconnected = { ...graph, nodes: [...graph.nodes, loose], edges: graph.edges.map(edge => edge === source
+      ? { from: loose.id, to: first.id, input: cableInput } : edge) };
+    expect(keepCompatibleEdges(disconnected).edges).toEqual(disconnected.edges);
+    expect(compileLiveGraph(disconnected).tempo).toBe(45);
+  });
+
+  it("validates variable setters when a junction receives a signal", () => {
+    const graph = starterGraph();
+    const variable = { id: "amount", name: "Amount", type: "number" } as const;
+    const first = makeNode("variable", 0, 0, { variable: variable.id });
+    const second = makeNode("variable", 0, 0, { variable: variable.id });
+    const junction = makeNode("junction", 0, 0, { type: variable.type });
+    const number = makeNode("constant", 0, 0, { mode: "number" });
+    graph.nodes.push(first, second, junction, number);
+    graph.variables.push(variable);
+    graph.edges.push({ from: junction.id, to: first.id, input: "value" }, { from: number.id, to: second.id, input: "value" });
+    expect(isVariableSetter(graph, first)).toBe(false);
+    expect(isVariableSetter(graph, second)).toBe(true);
+    expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    expect(withEdge(graph, { from: number.id, to: junction.id, input: cableInput })).toBeUndefined();
+  });
+
   it.each([
     ["blend", "blend", "screen", "add"],
     ["fit", "objectfit", "contain", "tilecenter"],
@@ -173,7 +433,7 @@ describe("NodesDevil graph", () => {
     expect(inputsFor(graph, ramp).map(({ id, type }) => [id, type])).toEqual([
       ["stop-start", "color"], ["stop-end", "color"], ["factor", "number"], ["image", "visual"],
     ]);
-    expect(outputsFor(graph, ramp).map(({ label, type }) => [label, type])).toEqual([["Image", "visual"], ["Alpha", "number"]]);
+    expect(outputsFor(graph, ramp).map(({ label, type }) => [label, type])).toEqual([["Image", "visual"], ["Alpha", "number"], ["Mask", "number"]]);
     expect(valueTypes).not.toContain("gradient");
     expect(withEdge(graph, { from: ramp.id, output: "alpha", to: output.id, input: "image" })).toBeUndefined();
     expect(withEdge(graph, { from: factor.id, to: ramp.id, input: "stop-end" })).toBeUndefined();
@@ -440,6 +700,84 @@ describe("NodesDevil graph", () => {
     expect(snapshotRegistry()).toEqual(previous);
     expect(() => compileLiveGraph({ ...graph, edges: [] })).toThrow(/connection/);
     expect(snapshotRegistry()).toEqual(previous);
+  });
+
+  it.each([
+    ["add", 7, 2, 9], ["subtract", 7, 2, 5], ["multiply", 7, 2, 14], ["divide", 7, 2, 3.5],
+    ["remainder", 7, 2, 1], ["min", 7, 2, 2], ["max", 7, 2, 7], ["divide", 7, 0, 0], ["remainder", 7, 0, 0],
+  ] as const)("evaluates the %s expression with %s and %s as a fixed Float", (mode, a, b, result) => {
+    initRegistry();
+    const graph = starterGraph();
+    const expression = makeNode("expression", 0, 0, { mode, a, b });
+    const tempo = makeNode("tempo", 0, 0);
+    graph.nodes.push(expression, tempo);
+    expect(compileLiveGraph(withEdge(graph, { from: expression.id, to: tempo.id, input: "value" })!).tempo).toBe(result);
+  });
+
+  it("combines Float signals and converts them through Boolean and String variables", () => {
+    initRegistry();
+    const left = makeNode("numberPattern", 0, 0, { pattern: "-2 0 3 -4" });
+    const right = makeNode("numberPattern", 0, 0, { pattern: "2 3" });
+    const multiply = makeNode("expression", 0, 0, { mode: "multiply" });
+    const toBoolean = makeNode("convert", 0, 0, { mode: "floatToBoolean" });
+    const boolSet = makeNode("variable", 0, 0, { variable: "enabled" });
+    const boolGet = makeNode("variable", 0, 0, { variable: "enabled" });
+    const toFloat = makeNode("convert", 0, 0, { mode: "booleanToFloat" });
+    const binaryText = makeNode("convert", 0, 0, { mode: "floatToString" });
+    const productText = makeNode("convert", 0, 0, { mode: "floatToString" });
+    const textSet = makeNode("variable", 0, 0, { variable: "label" });
+    const textGet = makeNode("variable", 0, 0, { variable: "label" });
+    const binaryLayer = makeNode("text", 0, 0);
+    const productLayer = makeNode("text", 0, 0);
+    const binaryOutput = makeNode("output", 0, 0);
+    const productOutput = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [left, right, multiply, toBoolean, boolSet, boolGet, toFloat, binaryText, productText, textSet, textGet,
+        binaryLayer, productLayer, binaryOutput, productOutput],
+      variables: [{ id: "enabled", name: "Enabled", type: "boolean" }, { id: "label", name: "Label", type: "text" }],
+      edges: [
+        { from: left.id, to: multiply.id, input: "a" },
+        { from: right.id, to: multiply.id, input: "b" },
+        { from: multiply.id, to: toBoolean.id, input: "float" },
+        { from: toBoolean.id, to: boolSet.id, input: "value" },
+        { from: boolGet.id, to: toFloat.id, input: "boolean" },
+        { from: toFloat.id, to: binaryText.id, input: "float" },
+        { from: binaryText.id, to: textSet.id, input: "value" },
+        { from: textGet.id, to: binaryLayer.id, input: "content" },
+        { from: binaryLayer.id, to: binaryOutput.id, input: "image" },
+        { from: multiply.id, to: productText.id, input: "float" },
+        { from: productText.id, to: productLayer.id, input: "content" },
+        { from: productLayer.id, to: productOutput.id, input: "image" },
+      ],
+    };
+    expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    expect(withEdge(graph, { from: toBoolean.id, to: binaryLayer.id, input: "content" })).toBeUndefined();
+    expect(withEdge(graph, { from: multiply.id, to: boolSet.id, input: "value" })).toBeUndefined();
+    const { screens } = compileLiveGraph(graph);
+    const sample = (index: number) => [0.125, 0.375, 0.625, 0.875]
+      .map(cycle => screens[index].queryArc(cycle, cycle)[0].value.text);
+    expect(sample(0)).toEqual(["1", "0", "1", "1"]);
+    expect(sample(1)).toEqual(["-4", "0", "9", "-12"]);
+  });
+
+  it.each([["numberPattern", "pattern"], ["choose", "choices"]] as const)("feeds converted String signals to %s", (kind, input) => {
+    initRegistry();
+    const graph = starterGraph();
+    const signal = makeNode("numberPattern", 0, 0, { pattern: "-2.5 3" });
+    const toString = makeNode("convert", 0, 0, { mode: "floatToString" });
+    const numbers = makeNode(kind, 0, 0);
+    const tempo = makeNode("tempo", 0, 0);
+    graph.nodes.push(signal, toString, numbers, tempo);
+    graph.edges.push(
+      { from: signal.id, to: toString.id, input: "float" },
+      { from: toString.id, to: numbers.id, input },
+      { from: numbers.id, to: tempo.id, input: "value" },
+    );
+    const compiled = compileLiveGraph(graph);
+    expect(typeof compiled.tempo).not.toBe("number");
+    if (typeof compiled.tempo === "number") return;
+    expect(compiled.tempo.queryArc(0.25, 0.25)[0].value).toBe(-2.5);
+    expect(compiled.tempo.queryArc(0.75, 0.75)[0].value).toBe(3);
   });
 
   it("uses independently wired scale axes and falls back to uniform scale for empty axes", () => {

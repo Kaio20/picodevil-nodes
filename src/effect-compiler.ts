@@ -77,6 +77,7 @@ export const MAX_OPS = 13;
 export interface EffectInputs {
   texIndex:     number;
   alpha:        number;
+  opacityTexIndex?: number;
   grey:         number;
   hueRot:       number;
   pixUVStepX:   number;
@@ -365,7 +366,8 @@ export function compileInto(e: EffectInputs, out: Float32Array, offset: number):
   // unconditionally on every tile.
   out[i] = OP_ALPHA;
   out[i + 1] = e.alpha;
-  out[i + 2] = 0; out[i + 3] = 0; out[i + 4] = 0; out[i + 5] = 0; out[i + 6] = 0; out[i + 7] = 0;
+  out[i + 2] = (e.opacityTexIndex ?? -1) + 1; // 0 means uniform opacity
+  out[i + 3] = 0; out[i + 4] = 0; out[i + 5] = 0; out[i + 6] = 0; out[i + 7] = 0;
   i += OP_FLOATS;
   count++;
 

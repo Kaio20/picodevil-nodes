@@ -9,6 +9,7 @@ import {
   checkCompatibility,
   type CompatibilityResult,
 } from "./server-config";
+import { phosphorIcon } from "./icons";
 
 const STATUS_COLOURS = {
   unknown: { dot: "#666", text: "#999" },
@@ -31,9 +32,8 @@ export function createServerSettingsButton(): { el: HTMLElement; dispose: () => 
   const button = document.createElement("button");
   button.className = "pd-btn-flat server-btn";
 
-  const dot = document.createElement("span");
-  dot.className = "server-dot";
-  button.append(document.createTextNode("Server "), dot);
+  const dot = phosphorIcon("circle", "server-dot");
+  button.append("Server", dot);
   wrapper.appendChild(button);
 
   const popover = document.createElement("div");
@@ -65,7 +65,9 @@ export function createServerSettingsButton(): { el: HTMLElement; dispose: () => 
     const health = getServerHealth();
     const err = getServerError();
     const c = STATUS_COLOURS[status];
-    dot.style.background = c.dot;
+    dot.style.color = c.dot;
+    dot.classList.toggle("ph-circle", status !== "ok");
+    dot.classList.toggle("ph-record", status === "ok");
     let tip: string;
     if (!url) tip = "server: not configured";
     else if (status === "ok" && health) tip = `server: connected (v${health.version})`;

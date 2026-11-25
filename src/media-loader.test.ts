@@ -54,20 +54,25 @@ describe("reconcileGrid", () => {
     const grid = document.createElement("div");
     reconcileGrid(grid, [e("1", "a", { uploading: true, uploadProgress: 0.2 })]);
     const cell = grid.querySelector<HTMLElement>(".thumb-cell")!;
-    expect(cell.querySelector(".thumb-progress")?.textContent).toBe("↑20%");
+    const badge = cell.querySelector(".thumb-progress")!;
+    expect(badge.querySelector(".ph-upload-simple")).not.toBeNull();
+    expect(badge.textContent).toBe("20%");
 
     reconcileGrid(grid, [e("1", "a", { uploading: true, uploadProgress: 0.8 })]);
     expect(grid.querySelector(".thumb-cell")).toBe(cell); // reused, not rebuilt (no img reload)
-    expect(cell.querySelector(".thumb-progress")?.textContent).toBe("↑80%");
+    expect(cell.querySelector(".thumb-progress")).toBe(badge);
+    expect(badge.textContent).toBe("80%");
 
     reconcileGrid(grid, [e("1", "a")]); // finished
     expect(cell.querySelector(".thumb-progress")).toBeNull();
   });
 
-  it("uses a compact glyph+percent for download/transcode badges", () => {
+  it("uses a compact icon and percentage for download/transcode badges", () => {
     const grid = document.createElement("div");
     reconcileGrid(grid, [e("1", "a", { downloading: true, phase: "transcode", phasePercent: 0.5 })]);
-    expect(grid.querySelector(".thumb-progress")?.textContent).toBe("⚙50%");
+    const badge = grid.querySelector(".thumb-progress")!;
+    expect(badge.querySelector(".ph-gear")).not.toBeNull();
+    expect(badge.textContent).toBe("50%");
   });
 });
 

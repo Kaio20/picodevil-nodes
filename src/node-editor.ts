@@ -1,6 +1,6 @@
 import {
-  definition, fftBands, fontAxes, fontAxisFor, inputsFor, insertNodeOnEdge, isRenderable, isVariableSetter, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, modeFor, nodeKinds, outputsFor, outputType,
-  previewType, rampInterpolation, rampStops, valueTypes, withEdge, type Graph, type GraphEdge, type GraphNode,
+  cableInput, cableType, definition, fftBands, fontAxes, fontAxisFor, hasConnectedInput, inputType, inputsFor, insertNodeOnEdge, isCablePoint, isPixelOutput, isRenderable, isVariableSetter, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, modeFor, nodeKinds, outputsFor, outputType,
+  previewType, pruneRoutingNodes, rampInterpolation, rampStops, valueTypes, withConvertedEdge, withEdge, type Graph, type GraphEdge, type GraphNode,
   type Literal, type NodeDrop, type NodeMode, type ValueType,
 } from "./node-graph";
 import type { PreviewTarget } from "./node-runtime";
@@ -14,6 +14,9 @@ import { bindNumberDrag, trackPointerDrag } from "./node-number-input";
 import { gradientField } from "./node-gradient-input";
 import { clampUnit, colorFromCss, isColorValue } from "./color-value";
 import { colorField } from "./node-color-input";
+import { blendModes } from "./renderer-interface";
+import { nodeChoiceField, type SelectChoice } from "./node-choice-field";
+import { phosphorIcon } from "./icons";
 
 export interface GraphView { x: number; y: number; zoom: number; previews: string[] }
 interface Options {
@@ -31,13 +34,19 @@ interface Port { node: string; input?: string; output?: string }
 interface PendingCable { fixedPorts: Port[]; detached: GraphEdge[] }
 interface Insertion { edge: GraphEdge; spliced: boolean; input?: string; output?: string; atPort?: boolean; padded?: boolean }
 type AttachNode = (graph: Graph, node: GraphNode) => Graph | undefined;
-interface MenuChoice { drop: NodeDrop; name: string; category: string; modes?: NodeMode[]; search: string[] }
+interface MenuChoice { drop: NodeDrop; name: string; category: string; modes?: NodeMode[]; defaultMode?: NodeMode; search: string[] }
 const svgNamespace = "http://www.w3.org/2000/svg";
 const portDropPadding = 10;
+const alignedNodeGap = 24;
 const typeLabels: Record<ValueType, string> = { visual: "Image", textLayer: "Text", number: "Float", text: "String", boolean: "Boolean", color: "Color" };
 const categoryIcons: Record<string, string> = {
-  Sources: "▣", Signals: "∿", Playback: "▶", Layout: "▦", Image: "◐", Text: "T", Variables: "{}",
+  Sources: "film-strip", Signals: "waveform", Expressions: "function", Playback: "play",
+  Layout: "grid-four", Image: "image", Text: "text-t", Variables: "brackets-curly",
+  Output: "monitor", Routing: "path",
 };
+const blendMenuModes: NodeMode[] = blendModes.map(id => ({
+  id, label: id.split("-").map(word => word[0].toUpperCase() + word.slice(1)).join(" "),
+}));
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = "") {
   const el = document.createElement(tag);
@@ -53,20 +62,10 @@ function button(label: string, action: () => void, className = "nd-button") {
   return el;
 }
 
-type SelectChoice = [id: string, label: string, description?: string];
-
-function selectOption([id, label, description]: SelectChoice) {
-  const option = new Option(label, id);
-  if (description) option.dataset.tooltip = description;
-  return option;
-}
-
-function select(values: SelectChoice[], value: string, label: string, onChange: (value: string) => void) {
-  const el = element("select", "nd-field");
+function iconButton(icon: string, label: string, action: () => void, className = "nd-button") {
+  const el = button("", action, className);
+  el.append(phosphorIcon(icon));
   el.setAttribute("aria-label", label);
-  for (const choice of values) el.add(selectOption(choice));
-  el.value = value;
-  el.addEventListener("change", () => onChange(el.value));
   return el;
 }
 
@@ -168,7 +167,7 @@ function createNodeMenu(choices: MenuChoice[], choose: (drop: NodeDrop) => void)
         if (!score) return [];
       }
       return [{
-        name: mode && (matchingMode || mode !== definition(choice.drop.kind).modes?.[0]) ? `${choice.name} · ${mode.label}` : choice.name,
+        name: mode && (matchingMode || mode !== choice.defaultMode) ? `${choice.name} · ${mode.label}` : choice.name,
         drop: mode ? { ...choice.drop, data: { ...choice.drop.data, mode: mode.id } } : choice.drop,
         category: choice.category, score,
       }];
@@ -192,11 +191,8 @@ function createNodeMenu(choices: MenuChoice[], choose: (drop: NodeDrop) => void)
     const tab = button(category, () => {}, "nd-menu-category");
     tab.dataset.category = category;
     tab.setAttribute("aria-controls", results.id);
-    const icon = element("span", "nd-menu-icon", categoryIcons[category]);
-    icon.setAttribute("aria-hidden", "true");
-    tab.prepend(icon);
-    const arrow = element("span", "nd-menu-arrow");
-    arrow.setAttribute("aria-hidden", "true");
+    tab.prepend(phosphorIcon(categoryIcons[category], "nd-menu-icon"));
+    const arrow = phosphorIcon("caret-right", "nd-menu-arrow");
     tab.append(arrow);
     const trackHover = (event: PointerEvent) => {
       if (query.length || event.buttons !== 0 || event.pointerType === "touch" || category === active || event.target === arrow) {
@@ -265,7 +261,7 @@ function createNodeMenu(choices: MenuChoice[], choose: (drop: NodeDrop) => void)
 }
 
 export class NodeEditor {
-  graph: Graph;
+  private graph: Graph;
   readonly view: GraphView;
   private past: Graph[] = [];
   private future: Graph[] = [];
@@ -288,6 +284,8 @@ export class NodeEditor {
   private redoButton: HTMLButtonElement;
   private zoomLabel = element("span", "nd-zoom", "100%");
   private previews: PreviewTarget[] = [];
+  private choicePreview?: { graph: Graph; id: string; original?: PreviewTarget; alternate?: PreviewTarget };
+  private sourcePickers = new Map<string, ReturnType<typeof nodeChoiceField<string>>>();
   private cards = new Map<string, HTMLElement>();
   private edgePaths: { edge: GraphEdge; path: SVGPathElement; hit: SVGPathElement; insertHit: SVGPathElement }[] = [];
   private wireDrag?: { ports: Port[]; point: Point; detached: GraphEdge[] };
@@ -309,20 +307,26 @@ export class NodeEditor {
     this.status.setAttribute("role", "status");
     const top = element("div", "nd-toolbar");
     const brand = element("strong", "nd-brand", "NodesDevil");
-    const add = button("+ Add Node", () => this.openMenu({ x: 26, y: 22 }));
-    this.undoButton = button("↶", () => this.undo());
+    const add = button("Add Node", () => this.openMenu({ x: 26, y: 22 }));
+    add.prepend(phosphorIcon("plus"), " ");
+    this.undoButton = iconButton("arrow-u-up-left", "Undo", () => this.undo());
     this.undoButton.dataset.tooltip = "Undo";
-    this.undoButton.setAttribute("aria-label", "Undo");
-    this.redoButton = button("↷", () => this.redo());
+    this.redoButton = iconButton("arrow-u-up-right", "Redo", () => this.redo());
     this.redoButton.dataset.tooltip = "Redo";
-    this.redoButton.setAttribute("aria-label", "Redo");
     const projection = element("button", "nd-button", "Projection");
     projection.type = "button";
+    projection.prepend(phosphorIcon("projector-screen"), " ");
     options.bindProjectionToggle(projection);
+    const output = button("Open Output", options.openOutput);
+    output.prepend(phosphorIcon("paper-plane-tilt"), " ");
+    const playback = element("div", "nd-playback-controls");
+    playback.append(projection, this.makeRunButton(), this.status);
     top.append(brand, add, button("Variables", () => this.toggleVariables()), this.undoButton, this.redoButton,
-      this.makeRunButton(), this.status, projection, button("Open Output ↗", options.openOutput), button("Code", options.showCode));
+      playback, output);
     const navigation = element("div", "nd-navigation");
-    navigation.append(button("−", () => this.centerZoom(1 / 1.2)), this.zoomLabel, button("+", () => this.centerZoom(1.2)), button("Frame All", () => this.fit()));
+    navigation.append(iconButton("minus", "Zoom out", () => this.centerZoom(1 / 1.2)), this.zoomLabel,
+      iconButton("plus", "Zoom in", () => this.centerZoom(1.2)), button("Frame All", () => this.fit()),
+      button("Code", options.showCode));
     this.viewport.append(this.wires, this.world, this.selectionBox, this.ghost, this.insertHint, navigation, this.menu, this.variables);
     host.append(top, this.viewport);
     this.dismissTooltip = setupNodeTooltip(host);
@@ -338,7 +342,7 @@ export class NodeEditor {
       this.openMenu(this.local(event.clientX, event.clientY));
     });
     this.viewport.addEventListener("wheel", event => {
-      if ((event.target as Element).closest(".nd-menu, .nd-variables, .nd-color-popover, input, select")) return;
+      if ((event.target as Element).closest(".nd-menu, .nd-variables, .nd-color-popover, .nd-choice-field, input, select")) return;
       this.world.querySelector<HTMLElement>(".nd-color-popover:popover-open")?.hidePopover();
       event.preventDefault();
       this.zoom(Math.exp(-event.deltaY * 0.0017), this.local(event.clientX, event.clientY));
@@ -364,11 +368,14 @@ export class NodeEditor {
   }
 
   get visible() { return !this.host.hidden; }
+  get previewGraph() { return this.choicePreview?.graph ?? this.graph; }
+  get previewNode() { return this.choicePreview?.id; }
 
   visiblePreviews(): PreviewTarget[] {
     if (!this.visible || document.hidden) return [];
     const viewport = this.viewport.getBoundingClientRect();
-    return this.previews.filter(({ element }) => {
+    const { original, alternate } = this.choicePreview ?? {};
+    return this.previews.map(target => target === original && alternate ? alternate : target).filter(({ element }) => {
       const rect = element.getBoundingClientRect();
       return rect.bottom > viewport.top && rect.top < viewport.bottom && rect.right > viewport.left && rect.left < viewport.right;
     });
@@ -408,7 +415,8 @@ export class NodeEditor {
   }
 
   private makeRunButton() {
-    const run = button("▶ Run", () => this.run(), "nd-button nd-run");
+    const run = button("Run", () => this.run(), "nd-button nd-run");
+    run.prepend(phosphorIcon("play"), " ");
     run.dataset.tooltip = "Run graph\nCtrl/Cmd+Enter";
     return run;
   }
@@ -417,7 +425,7 @@ export class NodeEditor {
     this.past.push(this.graph);
     if (this.past.length > 75) this.past.shift();
     this.future.length = 0;
-    this.graph = graph;
+    this.graph = pruneRoutingNodes(graph);
     this.status.textContent = "Changes ready to run";
     this.status.classList.remove("error");
     this.save();
@@ -457,11 +465,13 @@ export class NodeEditor {
   private save() { this.options.save(this.graph, this.view); }
 
   private render() {
+    this.clearChoicePreview();
     this.dismissTooltip();
     const existing = new Map(this.previews.filter(target => !target.showRamp).map(target => [target.id, target]));
     this.previews = [];
     this.world.replaceChildren();
     this.cards.clear();
+    this.sourcePickers.clear();
     for (const node of this.graph.nodes) this.renderNode(node, existing.get(node.id));
     for (const id of this.selected) {
       if (!this.cards.has(id)) this.selected.delete(id);
@@ -485,6 +495,40 @@ export class NodeEditor {
     if (zIndex !== undefined) card.style.zIndex = String(zIndex);
     card.style.left = `${node.x}px`;
     card.style.top = `${node.y}px`;
+    if (isCablePoint(node) || node.kind === "convert") {
+      const input = inputsFor(this.graph, node)[0];
+      const output = outputType(this.graph, node);
+      const converter = node.kind === "convert";
+      const wiredInput = input && inputType(this.graph, node, input.id);
+      const conversion = converter && wiredInput && output ? modeFor(node) : undefined;
+      card.classList.add("nd-cable-point");
+      const type = cableType(node);
+      if (type) card.dataset.type = type;
+      const handle = button("", () => {}, "nd-cable-handle");
+      const loose = node.kind === "cableEnd";
+      if (converter) {
+        const icon = phosphorIcon("bandaids");
+        if (wiredInput) handle.dataset.type = wiredInput;
+        if (output) icon.dataset.type = output;
+        handle.append(icon);
+      }
+      const name = conversion?.label ?? (loose ? `Loose ${node.data.side === "source" ? "output" : "input"} end`
+        : converter && wiredInput ? `${input.label} Conversion` : converter && output ? `Conversion to ${typeLabels[output]}` : def.label);
+      handle.setAttribute("aria-label", name);
+      handle.dataset.tooltip = [name, conversion?.help, loose ? "Drag to move or reconnect" : "Drag to move"].filter(Boolean).join("\n");
+      handle.addEventListener("focus", () => this.selectNode(node.id));
+      handle.addEventListener("pointerdown", event => this.startNodeMove(event, node));
+      card.append(handle);
+      if (!loose && input) card.append(this.port(node, wiredInput, { input: input.id }));
+      if (!loose && (converter || output)) card.append(this.port(node, output, {}));
+      card.addEventListener("contextmenu", event => {
+        event.preventDefault();
+        this.openActions(node, this.local(event.clientX, event.clientY));
+      });
+      this.world.append(card);
+      this.cards.set(node.id, card);
+      return;
+    }
     const header = element("header", "nd-node-head");
     const hasSourcePicker = node.kind === "media" || node.kind === "texture";
     const entries = hasSourcePicker ? getAllEntries() : [];
@@ -500,47 +544,53 @@ export class NodeEditor {
     const type = previewType(this.graph, node);
     if (type) {
       const open = this.view.previews.includes(node.id);
-      const toggle = button(open ? "▾" : "▸", () => {
+      const toggle = iconButton(open ? "caret-down" : "caret-right", `Preview ${label}`, () => {
         this.view.previews = open ? this.view.previews.filter(id => id !== node.id) : [...this.view.previews, node.id];
         this.save();
         this.render();
         this.cards.get(node.id)?.querySelector<HTMLButtonElement>(".nd-preview-toggle")?.focus();
       }, "nd-preview-toggle");
       toggle.setAttribute("aria-expanded", String(open));
-      toggle.setAttribute("aria-label", `Preview ${label}`);
       header.append(toggle);
     }
     card.append(header);
     const body = element("div", "nd-node-body");
     if (def.modes) {
-      const setting = element("label", "nd-node-mode", "Mode");
-      const choices: SelectChoice[] = def.modes.map(item => [item.id, item.label, referenceForNode(node.kind, item).summary]);
-      const mode = select(choices, activeMode?.id ?? "", "Mode", value => {
+      const setting = element("div", "nd-node-mode", "Mode");
+      const choices: SelectChoice[] = def.modes.map(item => [
+        item.id, item.label, referenceForNode(node.kind, item).summary, undefined,
+        node.kind === "constant" ? item.inputs?.[0]?.type : item.output,
+      ]);
+      const mode = this.choiceField(node, "mode", choices, activeMode?.id ?? "", "Mode", value => {
         this.setData(node, "mode", value);
-        this.cards.get(node.id)?.querySelector<HTMLSelectElement>(".nd-node-mode select")?.focus();
-      });
+        this.cards.get(node.id)?.querySelector<HTMLElement>(".nd-node-mode .nd-choice-trigger")?.focus();
+      }, true);
       setting.append(mode);
       body.append(setting);
     }
     if (hasSourcePicker) {
-      body.append(select([], "", def.label, value => {
+      const picker = nodeChoiceField([], "", def.label, (value: string) => {
         const texture = node.kind === "texture" ? catalogTexture(value) : undefined;
         this.setData(node, "media", texture ? useCatalogTexture(texture).id : value);
-        this.cards.get(node.id)?.querySelector("select")?.focus();
-      }));
+        this.cards.get(node.id)?.querySelector<HTMLElement>(".nd-choice-trigger")?.focus();
+      }, value => this.previewData(node.id, "media", value));
+      this.sourcePickers.set(node.id, picker);
+      body.append(picker.field);
       body.append(element("small", "nd-node-error", `${def.label} unavailable`));
     }
     if (node.kind === "fft") {
       const bandLabels = ["Volume", "Bass", "Mid", "Treble"];
       const bandDescriptions = ["Overall audio level.", "Energy in the lowest frequency band.", "Energy in the middle frequency band.", "Energy in the highest frequency band."];
       const band = fftBands.find(band => band === node.data.band) ?? "bass";
-      body.append(select(fftBands.map((band, index) => [band, bandLabels[index], bandDescriptions[index]]), band, "FFT band", value => this.setData(node, "band", value)));
+      body.append(this.choiceField(node, "band", fftBands.map((band, index) => [band, bandLabels[index], bandDescriptions[index]]),
+        band, "FFT band", value => this.setData(node, "band", value)));
     }
     if (node.kind === "variable") {
       const choices = this.graph.variables.filter(variable => !variableSetter || !this.graph.nodes.some(other =>
         other !== node && other.data.variable === variable.id && isVariableSetter(this.graph, other)));
-      const options: SelectChoice[] = choices.map(item => [item.id, item.name, typeLabels[item.type]]);
-      body.append(select([["", "Choose variable…"], ...options], String(node.data.variable ?? ""), "Variable", value => this.setData(node, "variable", value)));
+      const options: SelectChoice[] = choices.map(item => [item.id, item.name, typeLabels[item.type], undefined, item.type]);
+      body.append(this.choiceField(node, "variable", [["", "Choose variable…"], ...options], String(node.data.variable ?? ""),
+        "Variable", value => this.setData(node, "variable", value), true));
     }
     for (const output of outputsFor(this.graph, node)) {
       const row = element("div", "nd-port-row nd-port-out");
@@ -571,9 +621,9 @@ export class NodeEditor {
           edges: removed ? this.graph.edges.filter(edge => edge.to !== node.id || edge.input !== removed.id) : this.graph.edges,
         });
         this.cards.get(node.id)?.querySelector<HTMLButtonElement>(`[data-ramp-stop="${active}"]`)?.focus();
-      }, value => this.editLiteral(node.id, "interpolation", value, true));
+      }, value => this.editLiteral(node.id, "interpolation", value, true), value => this.previewData(node.id, "interpolation", value));
       body.append(ramp.field);
-      const wired = new Set(this.graph.edges.filter(edge => edge.to === node.id && colors.has(edge.input)).map(edge => edge.input));
+      const wired = new Set([...colors.keys()].filter(input => hasConnectedInput(this.graph, node.id, input)));
       if (wired.size) {
         const status = element("span", "nd-preview-status");
         ramp.field.append(status);
@@ -585,7 +635,7 @@ export class NodeEditor {
       const fontAxis = node.kind === "fontAxis" && socket.id === "tag";
       const row = element(fontAxis || socket.type === "color" ? "div" : "label", "nd-port-row");
       row.dataset.type = socket.type;
-      const connected = this.graph.edges.some(edge => edge.to === node.id && edge.input === socket.id);
+      const connected = hasConnectedInput(this.graph, node.id, socket.id);
       row.classList.toggle("nd-connected", connected);
       if (!connected && node.kind !== "variable" && !socket.optional && socket.default === undefined) row.classList.add("nd-required");
       row.append(this.port(node, socket.type, { input: socket.id }), element("span", "", socket.label));
@@ -603,7 +653,7 @@ export class NodeEditor {
         const choices = socket.choices.map<SelectChoice>(choice => [choice, choice]);
         // Keep values saved before this socket offered a dropdown.
         if (!socket.choices.includes(value)) choices.push([value, value || "(empty)"]);
-        row.append(select(choices, value, socket.label, selected => this.editLiteral(node.id, socket.id, selected, true)));
+        row.append(this.choiceField(node, socket.id, choices, value, socket.label, selected => this.editLiteral(node.id, socket.id, selected, true)));
       } else if (!connected && (socket.type === "number" || socket.type === "boolean" || socket.type === "text") &&
           (socket.optional || socket.default !== undefined)) {
         const input = element("input", "nd-field");
@@ -650,7 +700,11 @@ export class NodeEditor {
     if (node.kind === "output") {
       const outputs = this.graph.nodes.filter(item => item.kind === "output");
       const order = outputs.findIndex(item => item.id === node.id);
-      if (outputs.length > 1) body.append(select(outputs.map((_, i) => [String(i), `Layer ${i + 1}`]), String(order), "Layer order", value => this.reorderOutput(node, Number(value))));
+      if (outputs.length > 1) {
+        const { field } = nodeChoiceField(outputs.map((_, i) => [String(i), `Layer ${i + 1}`]),
+          String(order), "Layer order", value => this.reorderOutput(node, Number(value)));
+        body.append(field);
+      }
       body.append(this.makeRunButton());
     }
     card.append(body);
@@ -673,10 +727,10 @@ export class NodeEditor {
     const axis = fontAxisFor(tag);
     const customDescription = (value: string) => value ? `OpenType axis: ${value}` : "Enter an OpenType axis tag.";
     const choices: SelectChoice[] = [...fontAxisChoices, ["", "Custom tag…", customDescription(axis ? "" : tag)]];
-    const picker = select(choices, axis?.tag ?? "", "Font axis", value => {
+    const picker = this.choiceField(node, "tag", choices, axis?.tag ?? "", "Font axis", value => {
       this.setData(node, "tag", value);
-      this.cards.get(node.id)?.querySelector<HTMLElement>(value ? ".nd-font-axis-field select" : ".nd-font-axis-field input")?.focus();
-    });
+      this.cards.get(node.id)?.querySelector<HTMLElement>(value ? ".nd-font-axis-field .nd-choice-trigger" : ".nd-font-axis-field input")?.focus();
+    }, true);
     field.append(picker);
     if (!axis) {
       const custom = element("input", "nd-field");
@@ -688,7 +742,7 @@ export class NodeEditor {
       custom.addEventListener("input", () => {
         const tag = custom.value.trim();
         this.editLiteral(node.id, "tag", tag, !editing);
-        picker.selectedOptions[0].dataset.tooltip = customDescription(tag);
+        picker.querySelector<HTMLElement>(".nd-choice-trigger")!.dataset.tooltip = `Custom tag…\n${customDescription(tag)}`;
         editing = true;
       });
       field.append(custom);
@@ -700,42 +754,32 @@ export class NodeEditor {
     const texture = node.kind === "texture";
     const sources = texture ? entries.filter(isTexture) : entries;
     const media = sources.find(item => item.id === node.data.media);
-    const picker = card.querySelector<HTMLSelectElement>("select")!;
+    const picker = this.sourcePickers.get(node.id)!;
     if (texture) {
       this.updateTexturePicker(picker, sources, media);
     } else {
       const mediaTypes = { video: "Video", image: "Image", stream: "Live stream" };
-      picker.replaceChildren(selectOption(["", "Choose media…"]), ...sources.map(({ id, name, type }) => selectOption([id, name, mediaTypes[type]])));
-      picker.value = media?.id ?? "";
+      picker.setChoices([["", "Choose media…"], ...sources.map(({ id, name, type }): SelectChoice => [id, name, mediaTypes[type]])], media?.id ?? "");
     }
     card.querySelector(".nd-preview-toggle")?.setAttribute("aria-label", `Preview ${media?.name ?? definition(node.kind).label}`);
     card.querySelector<HTMLElement>(".nd-node-error")!.hidden = Boolean(media && !media.unavailable);
   }
 
-  private updateTexturePicker(picker: HTMLSelectElement, entries: MediaEntry[], selected?: MediaEntry) {
+  private updateTexturePicker(picker: ReturnType<typeof nodeChoiceField<string>>, entries: MediaEntry[], selected?: MediaEntry) {
     const registered = new Map<string, MediaEntry>();
     const local: MediaEntry[] = [];
     for (const entry of entries) {
       if (catalogTexture(entry.url) && !registered.has(entry.url)) registered.set(entry.url, entry);
       else local.push(entry);
     }
-    picker.replaceChildren(new Option("Choose texture…", ""));
-    if (local.length) {
-      const group = document.createElement("optgroup");
-      group.label = "My textures";
-      group.append(...local.map(({ id, name }) => new Option(name, id)));
-      picker.append(group);
-    }
+    const choices: SelectChoice[] = [["", "Choose texture…"], ...local.map(({ id, name }): SelectChoice => [id, name, undefined, "My textures"])];
     for (const pack of getTexturePacks()) {
-      const group = document.createElement("optgroup");
-      group.label = pack.label;
       for (const texture of pack.textures) {
         const name = registered.get(texture.url)?.name;
-        group.append(new Option(name && name !== texture.name ? name : texture.label, texture.url));
+        choices.push([texture.url, name && name !== texture.name ? name : texture.label, undefined, pack.label]);
       }
-      picker.append(group);
     }
-    picker.value = selected && registered.get(selected.url)?.id === selected.id ? selected.url : selected?.id ?? "";
+    picker.setChoices(choices, selected && registered.get(selected.url)?.id === selected.id ? selected.url : selected?.id ?? "");
   }
 
   private makePreview(id: string, type: ValueType): PreviewTarget {
@@ -743,7 +787,7 @@ export class NodeEditor {
     wrap.dataset.type = type;
     const status = element("span", "nd-preview-status", "Loading…");
     const renderable = isRenderable(type);
-    const canvas = renderable || type === "number" || type === "color" ? element("canvas", "nd-thumbnail") : undefined;
+    const canvas = renderable || type === "number" || type === "color" || type === "boolean" ? element("canvas", "nd-thumbnail") : undefined;
     if (canvas) {
       canvas.width = type === "color" ? 1 : 200;
       canvas.height = type === "color" ? 1 : renderable ? 112 : 36;
@@ -753,22 +797,23 @@ export class NodeEditor {
     return { id, element: wrap, canvas, status, samples: [] };
   }
 
-  private port(node: GraphNode, type: ValueType, connection: Omit<Port, "node">, outputLabel?: string) {
+  private port(node: GraphNode, type: ValueType | undefined, connection: Omit<Port, "node">, outputLabel?: string) {
     const { input, output } = connection;
     const port = { node: node.id, ...connection };
     const socket = button("", () => {}, "nd-port");
     socket.dataset.port = node.id;
-    socket.dataset.type = type;
+    if (type) socket.dataset.type = type;
     socket.dataset.input = input ?? "";
     if (output !== undefined) socket.dataset.output = output;
     const inputSocket = input ? inputsFor(this.graph, node).find(item => item.id === input) : undefined;
-    const label = inputSocket?.label ?? outputLabel ?? "Output";
-    const types = inputSocket?.acceptsTextLayer ? "Image, Text or Color" : typeLabels[type];
+    const label = input ? (type && inputSocket?.label) || "Input" : outputLabel ?? "Output";
+    const types = !type ? "Connect to choose a type" : inputSocket?.acceptsTextLayer ? "Image, Text or Color"
+      : !input && isPixelOutput(this.graph, node, output) ? `${typeLabels[type]} per pixel` : typeLabels[type];
     const connected = this.edgesAt(port).length > 0;
     socket.dataset.tooltip = `${label} · ${types}${connected ? "\nAlt-click to disconnect" : ""}`;
-    const useInputLabel = node.kind === "variable" || (node.kind === "colorRamp" && inputSocket?.type === "color");
-    const inputName = useInputLabel ? inputSocket?.label : input;
-    socket.setAttribute("aria-label", `${definition(node.kind).label} ${inputName ?? (outputLabel ? outputLabel + " output" : "output")} (${type})`);
+    const useInputLabel = node.kind === "variable" || node.kind === "junction" || (node.kind === "colorRamp" && inputSocket?.type === "color");
+    const inputName = input && !type ? "input" : useInputLabel ? inputSocket?.label : input;
+    socket.setAttribute("aria-label", `${definition(node.kind).label} ${inputName ?? (outputLabel ? outputLabel + " output" : "output")} (${type ?? "unassigned"})`);
     socket.addEventListener("pointerdown", event => this.startWire(event, port));
     socket.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -785,14 +830,53 @@ export class NodeEditor {
     return socket;
   }
 
-  private setData(node: GraphNode, key: string, value: Literal) {
-    if (node.data[key] === value) return;
+  private choiceField(node: GraphNode, key: string, choices: SelectChoice[], value: string, label: string,
+    onChange: (value: string) => void, updateSockets = false,
+  ) {
+    return nodeChoiceField(choices, value, label, onChange, value => this.previewData(node.id, key, value, updateSockets)).field;
+  }
+
+  private clearChoicePreview() {
+    const preview = this.choicePreview;
+    this.choicePreview = undefined;
+    if (!preview?.original) return;
+    preview.alternate?.element.remove();
+    preview.original.element.hidden = false;
+  }
+
+  private previewData(id: string, key: string, value?: string, updateSockets = false) {
+    this.clearChoicePreview();
+    if (value === undefined) return;
+    const node = this.graph.nodes.find(item => item.id === id);
+    if (!node || node.data[key] === value) return;
+    const graph = this.graphWithData(node, key, value);
+    const next = updateSockets ? keepCompatibleEdges(graph) : graph;
+    const candidate = next.nodes.find(item => item.id === id);
+    if (!candidate) return;
+    this.choicePreview = { graph: next, id };
+    const original = this.previews.find(target => target.id === id && !target.showRamp);
+    if (!original) return;
+    const type = previewType(next, candidate);
+    if (!type || type === original.element.dataset.type) return;
+    const alternate = this.makePreview(id, type);
+    original.element.after(alternate.element);
+    original.element.hidden = true;
+    Object.assign(this.choicePreview, { original, alternate });
+  }
+
+  private graphWithData(node: GraphNode, key: string, value: Literal) {
     const data = { ...node.data, [key]: value };
     if (node.kind === "fontAxis" && key === "tag") {
       const axis = fontAxisFor(value);
       if (typeof axis?.value === "number") data.value = axis.value;
     }
-    this.change(keepCompatibleEdges({ ...this.graph, nodes: this.graph.nodes.map(item => item.id === node.id ? { ...item, data } : item) }));
+    return { ...this.graph, nodes: this.graph.nodes.map(item => item.id === node.id ? { ...item, data } : item) };
+  }
+
+  private setData(node: GraphNode, key: string, value: Literal) {
+    const current = this.graph.nodes.find(item => item.id === node.id);
+    if (!current || current.data[key] === value) return;
+    this.change(keepCompatibleEdges(this.graphWithData(current, key, value)));
   }
 
   private editLiteral(id: string, key: string, value: Literal | undefined, first: boolean) {
@@ -830,6 +914,7 @@ export class NodeEditor {
   }
 
   private transform() {
+    this.world.querySelector<HTMLElement>(".nd-choice-list:popover-open")?.hidePopover();
     this.showInsertion();
     const { x, y, zoom } = this.view;
     this.world.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
@@ -868,7 +953,8 @@ export class NodeEditor {
   private portPosition(port: Port): Point | undefined {
     const selector = port.input ? `[data-input="${port.input}"]` : port.output
       ? `[data-output="${port.output}"]` : '[data-input=""]:not([data-output])';
-    const socket = this.cards.get(port.node)?.querySelector<HTMLElement>(selector);
+    const card = this.cards.get(port.node);
+    const socket = card?.querySelector<HTMLElement>(card.dataset.kind === "cableEnd" ? ".nd-cable-handle" : selector);
     if (!socket) return;
     const rect = socket.getBoundingClientRect();
     return this.local(rect.left + rect.width / 2, rect.top + rect.height / 2);
@@ -909,7 +995,23 @@ export class NodeEditor {
           return;
         }
         this.selectedEdge = edge;
-        this.drawWires();
+        path.classList.add("nd-wire-selected");
+      });
+      hit.addEventListener("dblclick", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.button !== 0 || this.cancelDrag || !this.graph.edges.includes(edge)) return;
+        this.closeMenu();
+        const point = this.worldPoint(this.local(event.clientX, event.clientY));
+        const type = outputType(this.graph, node, edge.output);
+        if (!type) return;
+        const junction = makeNode("junction", point.x, point.y, { type });
+        const edges = this.graph.edges.flatMap(item => item === edge ? [
+          { from: edge.from, output: edge.output, to: junction.id, input: cableInput },
+          { ...edge, from: junction.id, output: undefined },
+        ] : [item]);
+        this.selectNode(junction.id);
+        this.change({ ...this.graph, nodes: [...this.graph.nodes, junction], edges });
       });
       hit.addEventListener("contextmenu", event => {
         event.preventDefault(); event.stopPropagation();
@@ -925,7 +1027,7 @@ export class NodeEditor {
         const fixed = this.portPosition(port);
         const node = this.graph.nodes.find(item => item.id === port.node);
         if (!fixed || !node) continue;
-        const type = port.input ? inputsFor(this.graph, node).find(item => item.id === port.input)?.type : outputType(this.graph, node, port.output);
+        const type = port.input ? inputType(this.graph, node, port.input) : outputType(this.graph, node, port.output);
         const path = port.input ? this.wirePath(point, fixed, type) : this.wirePath(fixed, point, type);
         path.classList.add("nd-wire-drag");
         this.wires.append(path);
@@ -955,6 +1057,23 @@ export class NodeEditor {
     this.nodeZIndices.set(id, zIndex);
     const card = this.cards.get(id);
     if (card) card.style.zIndex = String(zIndex);
+  }
+
+  private alignSelectedNodes() {
+    const nodes = this.graph.nodes.filter(node => this.selected.has(node.id)).sort((a, b) => a.x - b.x || a.y - b.y);
+    if (nodes.length < 2) return;
+    const { x: start, y } = nodes[0];
+    const moved = new Map<string, GraphNode>();
+    let nextX = start;
+    for (const node of nodes) {
+      const x = Math.max(node.x, nextX);
+      const width = this.cards.get(node.id)?.offsetWidth ?? 0;
+      nextX = x + width + alignedNodeGap;
+      if (node.x !== x || node.y !== y) moved.set(node.id, { ...node, x, y });
+    }
+    if (!moved.size) return;
+    this.viewport.focus();
+    this.change({ ...this.graph, nodes: this.graph.nodes.map(node => moved.get(node.id) ?? node) });
   }
 
   private track(start: PointerEvent, move: (event: PointerEvent) => void, finish: (event?: PointerEvent) => void) {
@@ -1046,13 +1165,18 @@ export class NodeEditor {
     this.selectNode(node.id, true);
     const moving = this.selected;
     const nodes = this.graph.nodes.filter(item => moving.has(item.id));
+    const looseEnd = node.kind === "cableEnd" && nodes.length === 1;
+    const reconnect = (port: Port) => this.reconnectCableEnd(node, port);
     let dx = 0, dy = 0;
     let moved = false;
     const moveNode = (move: PointerEvent) => {
       const pixelsX = move.clientX - event.clientX;
       const pixelsY = move.clientY - event.clientY;
-      moved ||= Math.hypot(pixelsX, pixelsY) > 4;
-      if (!moved) return;
+      if (!moved) {
+        if (Math.hypot(pixelsX, pixelsY) <= 4) return;
+        moved = true;
+        if (looseEnd) this.highlight(port => Boolean(reconnect(port)));
+      }
       dx = pixelsX / this.view.zoom;
       dy = pixelsY / this.view.zoom;
       for (const item of nodes) {
@@ -1062,15 +1186,22 @@ export class NodeEditor {
         element.style.top = `${item.y + dy}px`;
       }
       this.drawWires();
-      const insertion = nodes.length === 1 ? this.insertionAtCard(node, card) : undefined;
+      const insertion = nodes.length === 1 && !isCablePoint(node) ? this.insertionAtCard(node, card) : undefined;
       this.showInsertion(insertion, insertion?.point, true);
     };
     this.track(event, moveNode, end => {
       if (end) moveNode(end);
       const insertion = this.insertion;
       this.showInsertion();
+      if (looseEnd) this.highlight(() => false);
       if (!moved) return;
       if (!end || (dx === 0 && dy === 0)) { this.render(); return; }
+      if (looseEnd) {
+        const under = document.elementsFromPoint(end.clientX, end.clientY).find(item => !card.contains(item)) ?? null;
+        const target = this.dropPortAt(end.clientX, end.clientY, under, port => Boolean(reconnect(port)), card);
+        const next = target && reconnect(target);
+        if (next) { this.change(next); return; }
+      }
       const next = insertion ? insertNodeOnEdge(this.graph, node, insertion.edge, insertion.input, insertion.output)?.graph ?? this.graph : this.graph;
       this.change({ ...next, nodes: next.nodes.map(item => moving.has(item.id) ? { ...item, x: item.x + dx, y: item.y + dy } : item) });
     });
@@ -1098,7 +1229,7 @@ export class NodeEditor {
   }
 
   private insertionAt(node: GraphNode, point: Point, under?: Element, movingPort?: Port): Insertion | undefined {
-    if (!under || !this.viewport.contains(under) || under.closest(".nd-navigation,.nd-menu,.nd-variables")) return;
+    if (isCablePoint(node) || node.kind === "convert" || !under || !this.viewport.contains(under) || under.closest(".nd-navigation,.nd-menu,.nd-variables")) return;
     const resolve = (edge: GraphEdge): Insertion | undefined => {
       const output = movingPort && !movingPort.input ? movingPort.output ?? "" : undefined;
       const result = insertNodeOnEdge(this.graph, node, edge, movingPort?.input, output);
@@ -1194,13 +1325,14 @@ export class NodeEditor {
       return;
     }
     const graph = this.graph;
-    const detached = port.input ? this.edgesAt(port) : [];
+    const existing = port.input ? this.edgesAt(port) : [];
+    const detached = existing;
+    const fixedPorts = existing.length ? existing.map(edge => ({ node: edge.from, output: edge.output })) : [port];
     const base = detached.length ? { ...graph, edges: graph.edges.filter(edge => !detached.includes(edge)) } : graph;
-    const fixedPorts = detached.length ? detached.map(edge => ({ node: edge.from, output: edge.output })) : [port];
     const resolveDrop = (target: Port) => {
-      if (!detached.length) return this.connect(graph, port, target);
+      if (!detached.length) return this.connect(graph, port, target, true);
       if (target.node === port.node && target.input === port.input) return graph;
-      return fixedPorts.reduce<Graph | undefined>((next, fixed) => next && this.connect(next, fixed, target), base);
+      return fixedPorts.reduce<Graph | undefined>((next, fixed) => next && this.connect(next, fixed, target, true), base);
     };
     const acceptsDrop = (target: Port) => Boolean(resolveDrop(target));
     this.wireDrag = { ports: fixedPorts, point: this.local(event.clientX, event.clientY), detached };
@@ -1234,11 +1366,32 @@ export class NodeEditor {
       : edge.from === port.node && edge.output === port.output);
   }
 
-  private connect(graph: Graph, first: Port, second: Port): Graph | undefined {
+  private connect(graph: Graph, first: Port, second: Port, convert = false): Graph | undefined {
     const [from, to] = first.input ? [second, first] : [first, second];
     if (from.input || !to.input) return;
     if (graph.edges.some(edge => edge.from === from.node && edge.output === from.output && edge.to === to.node && edge.input === to.input)) return graph;
-    return withEdge(graph, { from: from.node, to: to.node, input: to.input, ...(from.output && { output: from.output }) });
+    const edge = { from: from.node, to: to.node, input: to.input, ...(from.output && { output: from.output }) };
+    return convert ? this.completeWire(graph, edge) : withEdge(graph, edge);
+  }
+
+  private completeWire(graph: Graph, edge: GraphEdge) {
+    return withConvertedEdge(graph, edge, () => {
+      const source = this.portPosition({ node: edge.from, output: edge.output });
+      const target = this.portPosition({ node: edge.to, input: edge.input });
+      if (source && target) return this.worldPoint({ x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 });
+    });
+  }
+
+  private reconnectCableEnd(node: GraphNode, port: Port): Graph | undefined {
+    const graph = this.graph;
+    const source = node.data.side === "source";
+    if (port.node === node.id || Boolean(port.input) === source) return;
+    const edge = graph.edges.find(item => (source ? item.from : item.to) === node.id);
+    if (!edge) return;
+    const base = { ...graph, nodes: graph.nodes.filter(item => item !== node), edges: graph.edges.filter(item => item !== edge) };
+    const replacement = source ? { ...edge, from: port.node, output: port.output }
+      : { from: edge.from, output: edge.output, to: port.node, input: port.input! };
+    return this.completeWire(base, replacement);
   }
 
   private highlight(matches: (port: Port) => boolean) {
@@ -1250,7 +1403,7 @@ export class NodeEditor {
     if (port?.dataset.port && this.world.contains(port)) return { node: port.dataset.port, input: port.dataset.input || undefined, output: port.dataset.output };
   }
 
-  private dropPortAt(x: number, y: number, under: Element | null, accepts: (port: Port) => boolean): Port | undefined {
+  private dropPortAt(x: number, y: number, under: Element | null, accepts: (port: Port) => boolean, moving?: HTMLElement): Port | undefined {
     if (!under || !this.viewport.contains(under) || under.closest(".nd-menu,.nd-variables,.nd-navigation,.nd-insert-hint")) return;
     const direct = this.portFrom(under);
     if (direct) return direct;
@@ -1266,7 +1419,9 @@ export class NodeEditor {
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
       const distance = Math.hypot(centerX - x, centerY - y);
-      if (distance >= nearestDistance || document.elementFromPoint(centerX, centerY) !== socket) continue;
+      if (distance >= nearestDistance) continue;
+      const hit = moving ? document.elementsFromPoint(centerX, centerY).find(item => !moving.contains(item)) : document.elementFromPoint(centerX, centerY);
+      if (hit !== socket) continue;
       const port = this.portFrom(socket)!;
       if (!accepts(port)) continue;
       nearest = port;
@@ -1317,17 +1472,15 @@ export class NodeEditor {
     this.addAt({ kind: isTexture(entry) ? "texture" : "media", data: { media: entry.id } }, point);
   }
 
-  private attach(graph: Graph, node: GraphNode, port: Port): Graph | undefined {
-    if (port.input) {
-      for (const output of outputsFor(graph, node)) {
-        const next = this.connect(graph, { node: node.id, output: output.id }, port);
+  private attach(graph: Graph, node: GraphNode, port: Port, allowConversion = true): Graph | undefined {
+    const candidates = port.input
+      ? node.kind === "convert" ? [{ node: node.id }] : outputsFor(graph, node).map(output => ({ node: node.id, output: output.id }))
+      : inputsFor(graph, node).map(socket => ({ node: node.id, input: socket.id }));
+    for (const convert of allowConversion ? [false, true] : [false]) {
+      for (const candidate of candidates) {
+        const next = this.connect(graph, port, candidate, convert);
         if (next) return next;
       }
-      return;
-    }
-    for (const socket of inputsFor(graph, node)) {
-      const next = this.connect(graph, port, { node: node.id, input: socket.id });
-      if (next) return next;
     }
   }
 
@@ -1347,28 +1500,49 @@ export class NodeEditor {
     this.variables.hidden = true;
     const position = this.worldPoint(point);
     const base = this.graph;
-    const attach: AttachNode | undefined = port && ((graph, node) => {
-      if (!cable) return this.attach(graph, node, port);
+    const attach = port && ((graph: Graph, node: GraphNode, allowConversion = true) => {
+      if (!cable) return this.attach(graph, node, port, allowConversion);
       const loose = { ...graph, edges: graph.edges.filter(edge => !cable.detached.includes(edge)) };
-      const connected = cable.fixedPorts.reduce<Graph | undefined>((next, fixed) => next && this.attach(next, node, fixed), loose);
-      return connected && (this.attach(connected, node, port) ?? connected);
+      const connected = cable.fixedPorts.reduce<Graph | undefined>((next, fixed) => next && this.attach(next, node, fixed, allowConversion), loose);
+      return connected && (this.attach(connected, node, port, allowConversion) ?? connected);
     });
     const choices: MenuChoice[] = [];
     for (const kind of nodeKinds) {
       if (kind === "output") continue;
       const def = definition(kind);
       if (def.hidden) continue;
+      const menuModes = kind === "blend" ? blendMenuModes : def.modes;
       const options = kind === "variable" && port
         ? base.variables.map(variable => ({ name: `Variable · ${variable.name}`, data: { variable: variable.id } }))
         : [{ name: def.label, data: kind === "variable" && base.variables.length === 1 ? { variable: base.variables[0].id } : undefined }];
       for (const option of options) {
         const node: GraphNode = { id: "menu-node", kind, ...position, data: option.data ?? {} };
-        const compatible = (candidate: GraphNode) => !attach || Boolean(attach({ ...base, nodes: [...base.nodes, candidate] }, candidate));
-        const modes = def.modes?.filter(mode => compatible({ ...node, data: { ...node.data, mode: mode.id } }));
+        const compatible = (candidate: GraphNode, allowConversion = true) => {
+          if (!attach) return true;
+          const next = attach({ ...base, nodes: [...base.nodes, candidate] }, candidate, allowConversion);
+          return Boolean(next && (kind !== "convert" || next.nodes.find(node => node.id === candidate.id)?.data.mode === candidate.data.mode));
+        };
+        const direct: NodeMode[] = [];
+        const converted: NodeMode[] = [];
+        for (const mode of menuModes ?? []) {
+          const candidate = { ...node, data: { ...node.data, mode: mode.id } };
+          if (compatible(candidate, false)) direct.push(mode);
+          else if (compatible(candidate)) converted.push(mode);
+        }
+        const modes = menuModes && [...direct, ...converted];
         if (modes ? modes.length === 0 : !compatible(node)) continue;
+        const search = [option.name, kind, ...(def.reference ?? []), ...(def.aliases ?? [])];
+        if (kind === "expression" && modes) {
+          for (const mode of modes) {
+            choices.push({
+              drop: { kind, data: { ...option.data, mode: mode.id } }, name: mode.label, category: def.category,
+              search: [...search, `${option.name} ${mode.label}`, mode.label, ...(mode.reference ?? []), ...(mode.aliases ?? [])],
+            });
+          }
+          continue;
+        }
         choices.push({
-          drop: { kind, data: option.data }, name: option.name, category: def.category, modes,
-          search: [option.name, kind, ...(def.reference ?? []), ...(def.aliases ?? [])],
+          drop: { kind, data: option.data }, name: option.name, category: def.category, modes, defaultMode: menuModes?.[0], search,
         });
       }
     }
@@ -1435,8 +1609,15 @@ export class NodeEditor {
       choices.push(button("Duplicate node", () => { this.closeMenu(); this.duplicateOutput(node); }, "nd-menu-item"));
     }
     if (this.canRemoveNode(node)) {
-      choices.push(button("Delete node", () => this.removeNodes(new Set([node.id])), "nd-menu-item"));
+      const label = node.kind === "junction" ? "Delete junction" : node.kind === "cableEnd" ? "Delete cable end"
+        : node.kind === "convert" ? "Delete conversion" : "Delete node";
+      const ids = new Set([node.id]);
+      choices.push(button(label, () => this.removeNodes(ids), "nd-menu-item"));
+      if (node.kind === "junction") {
+        choices.push(button("Delete junction and keep cable ends", () => this.removeNodes(ids, { keepCableEnds: true }), "nd-menu-item"));
+      }
     }
+    if (isCablePoint(node) || node.kind === "convert") { this.showMenu(point, choices); return; }
     const input = this.graph.edges.find(edge => edge.to === node.id && edge.input === inputsFor(this.graph, node)[0]?.id);
     const outgoing = this.graph.edges.filter(edge => edge.from === node.id);
     if (input && outgoing.length) {
@@ -1473,7 +1654,7 @@ export class NodeEditor {
     return node.kind !== "output" || this.graph.nodes.some(item => item.kind === "output" && item.id !== node.id);
   }
 
-  private removeNodes(ids: ReadonlySet<string>) {
+  private removeNodes(ids: ReadonlySet<string>, { keepCableEnds = false } = {}) {
     const outputs = this.graph.nodes.filter(node => node.kind === "output");
     const retainedOutput = outputs.every(node => ids.has(node.id)) ? outputs[0]?.id : undefined;
     const removed = new Set(this.graph.nodes.filter(node => ids.has(node.id) && node.id !== retainedOutput).map(node => node.id));
@@ -1481,11 +1662,36 @@ export class NodeEditor {
     this.closeMenu();
     this.view.previews = this.view.previews.filter(id => !removed.has(id));
     this.selectNodes();
-    this.change({
-      ...this.graph,
-      nodes: this.graph.nodes.filter(node => !removed.has(node.id)),
-      edges: this.graph.edges.filter(edge => !removed.has(edge.from) && !removed.has(edge.to)),
+    const graph = this.graph;
+    const nodes = graph.nodes.filter(node => !removed.has(node.id));
+    const junctions = new Map(graph.nodes.filter(node => keepCableEnds && node.kind === "junction" && removed.has(node.id))
+      .map(node => [node.id, node]));
+    const branches = new Map<string, GraphEdge[]>();
+    for (const edge of graph.edges) {
+      if (junctions.has(edge.from) && !removed.has(edge.to)) {
+        const outgoing = branches.get(edge.from) ?? [];
+        outgoing.push(edge);
+        branches.set(edge.from, outgoing);
+      }
+    }
+    const edges = graph.edges.flatMap(edge => {
+      const missingSource = removed.has(edge.from);
+      const missingTarget = removed.has(edge.to);
+      if (!missingSource && !missingTarget) return [edge];
+      if (missingSource && missingTarget) return [];
+      const junction = junctions.get(missingSource ? edge.from : edge.to);
+      if (!junction) return [];
+      const type = cableType(junction);
+      if (!type) return [];
+      const outgoing = branches.get(junction.id);
+      const offset = missingSource && outgoing ? (outgoing.indexOf(edge) - (outgoing.length - 1) / 2) * 24 : 0;
+      const end = makeNode("cableEnd", junction.x + (missingSource ? 30 : -30), junction.y + offset, {
+        type, side: missingSource ? "source" : "target",
+      });
+      nodes.push(end);
+      return [missingSource ? { ...edge, from: end.id, output: undefined } : { ...edge, to: end.id, input: cableInput }];
     });
+    this.change({ ...graph, nodes, edges });
     this.viewport.focus();
   }
 
@@ -1511,11 +1717,13 @@ export class NodeEditor {
     const input = element("input", "nd-field");
     input.placeholder = "Name";
     input.setAttribute("aria-label", "Variable name");
-    const kinds = select(valueTypes.map(type => [type, typeLabels[type]]), "number", "Variable type", () => {});
+    let kind: ValueType = "number";
+    const kinds = nodeChoiceField<ValueType>(valueTypes.map(type => [type, typeLabels[type], undefined, undefined, type]),
+      kind, "Variable type", type => { kind = type; });
     const add = () => {
       const name = input.value.trim();
       if (!name || this.graph.variables.some(variable => variable.name === name)) return;
-      this.change({ ...this.graph, variables: [...this.graph.variables, { id: crypto.randomUUID(), name, type: kinds.value as ValueType }] });
+      this.change({ ...this.graph, variables: [...this.graph.variables, { id: crypto.randomUUID(), name, type: kind }] });
     };
     input.addEventListener("keydown", event => { if (event.key === "Enter") add(); });
     this.variables.replaceChildren(heading);
@@ -1535,7 +1743,7 @@ export class NodeEditor {
       this.variables.append(line);
     }
     const create = element("div", "nd-variable-row");
-    create.append(input, kinds, button("Add", add));
+    create.append(input, kinds.field, button("Add", add));
     this.variables.append(create);
   }
 
@@ -1558,11 +1766,16 @@ export class NodeEditor {
       if (target.matches("input,select")) (target as HTMLElement).blur();
       this.run();
     }
-    if (target.closest("input,select,textarea,.nd-color-popover") || !this.host.contains(target)) return;
+    if (target.closest("input,select,textarea,.nd-color-popover,.nd-choice-field") || !this.host.contains(target)) return;
     if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(event.key.toLowerCase())) {
       event.preventDefault();
       this.cancelDrag?.();
       if (event.shiftKey || event.key.toLowerCase() === "y") this.redo(); else this.undo();
+    }
+    if (event.key.toLowerCase() === "q" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey &&
+        !event.defaultPrevented && !event.isComposing && !this.cancelDrag && this.menu.hidden && this.selected.size > 1) {
+      event.preventDefault();
+      this.alignSelectedNodes();
     }
     if (event.key === "Delete" && !this.cancelDrag && !target.closest(".nd-gradient, .nd-color-field")) {
       if (this.selectedEdge) this.removeEdge(this.selectedEdge);

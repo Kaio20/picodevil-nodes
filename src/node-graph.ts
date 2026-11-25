@@ -65,6 +65,7 @@ export interface NodeMode {
   help?: string;
   aliases?: readonly string[];
   inputs?: readonly Socket[];
+  output?: ValueType;
 }
 
 const imageInput: Socket = { id: "image", label: "Image", type: "visual", acceptsTextLayer: true };
@@ -83,6 +84,76 @@ const effect = (label: string, reference: string, input?: Socket): NodeDefinitio
 });
 const signalInput = number("signal", "Signal", 0);
 const gridSize = [number("rows", "Rows", 2, 1), number("columns", "Columns", 2, 1)];
+
+const conversionColor: Socket = { id: "color", label: "Color", type: "color", default: whiteColor };
+const conversionBoolean = boolean("boolean", "Boolean", false);
+const conversionFloat = number("float", "Float", 0);
+const conversionString = text("text", "String", "");
+const conversionModes = [
+  { id: "floatToBoolean", label: "Float to Boolean", inputs: [conversionFloat], output: "boolean",
+    help: "Zero and NaN become false. Other numbers, including negative values, become true." },
+  { id: "booleanToFloat", label: "Boolean to Float", inputs: [conversionBoolean], output: "number",
+    help: "Convert false to 0 and true to 1." },
+  { id: "floatToString", label: "Float to String", inputs: [conversionFloat], output: "text",
+    help: "Format a uniform Float or signal as text." },
+  { id: "booleanToString", label: "Boolean to String", inputs: [conversionBoolean], output: "text" },
+  { id: "stringToFloat", label: "String to Float", inputs: [conversionString], output: "number",
+    help: "Parse a number. Empty or invalid strings return 0." },
+  { id: "stringToBoolean", label: "String to Boolean", inputs: [conversionString], output: "boolean",
+    help: "Empty strings, 0, false, off, and no are false. Other strings are true." },
+  { id: "stringToColor", label: "String to Color", inputs: [conversionString], output: "color",
+    help: "Parse a CSS color. Invalid colors become transparent." },
+  { id: "colorToString", label: "Color to String", inputs: [conversionColor], output: "text" },
+  { id: "floatToColor", label: "Float to Color", inputs: [conversionFloat], output: "color",
+    help: "Map a uniform Float from 0–1 to a grayscale swatch." },
+  { id: "booleanToColor", label: "Boolean to Color", inputs: [conversionBoolean], output: "color" },
+  { id: "colorToFloat", label: "Color to Float", inputs: [conversionColor], output: "number",
+    help: "Use brightness multiplied by alpha." },
+  { id: "colorToBoolean", label: "Color to Boolean", inputs: [conversionColor], output: "boolean" },
+  { id: "stringToText", label: "String to Text", inputs: [conversionString], output: "textLayer" },
+  { id: "floatToText", label: "Float to Text", inputs: [conversionFloat], output: "textLayer" },
+  { id: "booleanToText", label: "Boolean to Text", inputs: [conversionBoolean], output: "textLayer" },
+  { id: "colorToText", label: "Color to Text", inputs: [conversionColor], output: "textLayer" },
+  { id: "textToString", label: "Text to String", inputs: [textLayerInput], output: "text",
+    help: "Use the content of a text layer." },
+  { id: "stringToImage", label: "String to Image", inputs: [conversionString], output: "visual",
+    help: "Display the string as text in the image." },
+  { id: "floatToImage", label: "Float to Image", inputs: [conversionFloat], output: "visual",
+    help: "Display grayscale from 0–1. Pixel values stay spatial." },
+  { id: "booleanToImage", label: "Boolean to Image", inputs: [conversionBoolean], output: "visual",
+    help: "Display false as black and true as white." },
+  { id: "imageToFloat", label: "Image to Float", inputs: [imageInput], output: "number",
+    help: "Use brightness multiplied by alpha at each canvas pixel." },
+  { id: "imageToBoolean", label: "Image to Boolean", inputs: [imageInput], output: "boolean",
+    help: "Test whether each pixel has nonzero brightness after applying alpha." },
+  { id: "imageAlphaToFloat", label: "Image Alpha to Float", inputs: [imageInput], output: "number", explicit: true,
+    help: "Extract transparency as a Float per pixel. Opaque pixels are 1." },
+] as const satisfies readonly (NodeMode & { explicit?: boolean })[];
+
+export function acceptsPixelField(node: GraphNode, input: string) {
+  switch (node.kind) {
+    case "expression":
+    case "range":
+    case "variable":
+    case "junction":
+    case "cableEnd": return true;
+    case "constant": return node.data.mode !== "text";
+    case "colorRamp": return input === "factor";
+    case "alpha": return input === "value";
+    case "convert": return ["floatToBoolean", "booleanToFloat", "floatToImage", "booleanToImage"].includes(modeFor(node)?.id ?? "");
+    default: return false;
+  }
+}
+
+export const expressionOperations = [
+  { id: "add", label: "Add", right: 0, evaluate: (a: number, b: number) => a + b },
+  { id: "subtract", label: "Subtract", right: 0, evaluate: (a: number, b: number) => a - b },
+  { id: "multiply", label: "Multiply", right: 1, evaluate: (a: number, b: number) => a * b },
+  { id: "divide", label: "Divide", right: 1, evaluate: (a: number, b: number) => b === 0 ? 0 : a / b, help: "Divide A by B. A divisor of zero returns 0." },
+  { id: "remainder", label: "Remainder", aliases: ["Modulo"], right: 1, evaluate: (a: number, b: number) => b === 0 ? 0 : a % b, help: "Return the remainder of A divided by B. A divisor of zero returns 0." },
+  { id: "min", label: "Minimum", aliases: ["Min"], right: 0, evaluate: Math.min },
+  { id: "max", label: "Maximum", aliases: ["Max"], right: 0, evaluate: Math.max },
+] satisfies readonly (NodeMode & { right: number; evaluate: (a: number, b: number) => number })[];
 
 export const fontAxes = [
   { tag: "wght", label: "Weight", value: 400 },
@@ -175,8 +246,8 @@ export const catalog = {
   },
   colorRamp: {
     label: "Color Ramp", category: "Image", inputs: [unitInterval(number("factor", "Factor", 0.5)), { ...imageInput, optional: true }],
-    output: "visual", outputLabel: "Image", extraOutputs: [{ id: "alpha", label: "Alpha", type: "number" }],
-    help: "Connect an image to remap its shadows and highlights with the RGB ramp. With the Image input empty, render the ramp itself. Alpha samples the ramp at Factor (0–1).",
+    output: "visual", outputLabel: "Image", extraOutputs: [{ id: "alpha", label: "Alpha", type: "number" }, { id: "mask", label: "Mask", type: "number" }],
+    help: "Connect an image to remap its shadows and highlights. A per-pixel Factor can also drive the ramp. Alpha samples at Factor. Mask outputs the rendered ramp's alpha per pixel.",
   },
   waveform: {
     label: "Waveform", category: "Signals", inputs: [], output: "number",
@@ -201,6 +272,16 @@ export const catalog = {
     ],
   },
   lerp: { label: "Interpolate", reference: ["lerp"], category: "Signals", inputs: [signalInput], output: "number" },
+  expression: {
+    label: "Expression", category: "Expressions", inputs: [], output: "number",
+    help: "Calculate with two floats. Enter fixed values or connect signals and variables.",
+    modes: expressionOperations.map(({ id, label, aliases, help, right }) => ({
+      id, label, aliases, help, inputs: [number("a", "A", 0), number("b", "B", right)],
+    })),
+  },
+  convert: {
+    label: "Conversion", category: "Expressions", inputs: [], modes: conversionModes,
+  },
   tempo: { label: "Tempo", reference: ["setCpm"], category: "Playback", inputs: [number("value", "CPM", 30, 1)] },
   speed: { ...effect("Speed", "speed", number("value", "Speed", 1)), category: "Playback" },
   sync: {
@@ -257,7 +338,8 @@ export const catalog = {
   alpha: {
     ...effect("Opacity", "alpha"),
     modes: [
-      { id: "uniform", label: "Uniform", inputs: [number("value", "Opacity", 0.8)] },
+      { id: "uniform", label: "Uniform", inputs: [number("value", "Opacity", 0.8)],
+        help: "Set opacity with a Float, or use an image or Float field as a per-pixel mask." },
       { id: "white", label: "White to Transparent", reference: ["lumaToAlpha"], aliases: ["Luma to Alpha"],
         help: "Turn white into transparency and keep black. Gray becomes partially transparent black." },
       { id: "black", label: "Black to Transparent", reference: ["lumaToAlpha"],
@@ -298,6 +380,8 @@ export const catalog = {
     help: "Connect a value to set the variable. Without an input cable, the node reads the variable. Each variable can have one connected setter.",
   },
   output: { label: "Output", help: "Send an image to the final composition. With multiple outputs, layers are drawn from the lowest number to the highest.", category: "Output", inputs: [imageInput] },
+  junction: { label: "Junction", category: "Routing", inputs: [], hidden: true },
+  cableEnd: { label: "Loose cable end", category: "Routing", inputs: [], hidden: true },
 } satisfies Record<string, NodeDefinition>;
 
 export type NodeKind = keyof typeof catalog;
@@ -343,15 +427,74 @@ export function variableFor(graph: Graph, node: GraphNode): Variable | undefined
   return graph.variables.find(variable => variable.id === node.data.variable);
 }
 
+export const cableInput = "in";
+
+export function cableType(node: GraphNode): ValueType | undefined {
+  return valueTypes.find(type => type === node.data.type);
+}
+
+export function isCablePoint(node: GraphNode) {
+  return node.kind === "junction" || node.kind === "cableEnd";
+}
+
+export function isAutomaticConversion(node: GraphNode | undefined) {
+  return node?.kind === "convert" && node.data.automatic === true;
+}
+
+function sourceEdge(graph: Graph, edge: GraphEdge | undefined): GraphEdge | undefined {
+  let visited: Set<string> | undefined;
+  let conversion: GraphEdge | undefined;
+  while (edge) {
+    const { from } = edge;
+    const source = graph.nodes.find(node => node.id === from);
+    if (!source || source.kind === "cableEnd") return;
+    const input = source.kind === "junction" ? cableInput
+      : source.kind === "convert" ? modeFor(source)?.inputs?.[0]?.id : undefined;
+    if (!input) return conversion ?? edge;
+    if (source.kind === "convert") conversion ??= edge;
+    visited ??= new Set();
+    if (visited.has(source.id)) return;
+    visited.add(source.id);
+    edge = graph.edges.find(item => item.to === source.id && item.input === input);
+  }
+}
+
+export function hasConnectedInput(graph: Graph, id: string, input: string) {
+  return Boolean(sourceEdge(graph, graph.edges.find(edge => edge.to === id && edge.input === input)));
+}
+
+/** Resolve cables to their signal sources before evaluating the graph. */
+export function signalGraph(graph: Graph): Graph {
+  if (!graph.nodes.some(node => isCablePoint(node) || node.kind === "convert")) return graph;
+  const nodes = graph.nodes.filter(node => !isCablePoint(node));
+  const receiving = new Set(nodes.map(node => node.id));
+  const edges = graph.edges.flatMap(edge => {
+    if (!receiving.has(edge.to)) return [];
+    const source = sourceEdge(graph, edge);
+    if (!source) return [];
+    return [source === edge ? edge : { ...edge, from: source.from, output: source.output }];
+  });
+  return { ...graph, nodes, edges };
+}
+
+export function pruneRoutingNodes(graph: Graph): Graph {
+  if (!graph.nodes.some(node => node.kind === "cableEnd" || isAutomaticConversion(node))) return graph;
+  const attached = new Set(graph.edges.flatMap(edge => [edge.from, edge.to]));
+  const nodes = graph.nodes.filter(node => (node.kind !== "cableEnd" && !isAutomaticConversion(node)) || attached.has(node.id));
+  return nodes.length === graph.nodes.length ? graph : { ...graph, nodes };
+}
+
 export function isVariableSetter(graph: Graph, node: GraphNode): boolean {
-  return node.kind === "variable" && graph.edges.some(edge => edge.to === node.id && edge.input === "value");
+  return node.kind === "variable" && hasConnectedInput(graph, node.id, "value");
 }
 
 export function outputType(graph: Graph, node: GraphNode, output?: string): ValueType | undefined {
   if (output !== undefined) return definition(node.kind).extraOutputs?.find(socket => socket.id === output)?.type;
   if (node.kind === "variable") return variableFor(graph, node)?.type;
   if (node.kind === "constant") return modeFor(node)?.inputs?.[0]?.type;
-  return definition(node.kind).output;
+  if (node.kind === "junction" || (node.kind === "cableEnd" && node.data.side === "source")) return cableType(node);
+  if (node.kind === "convert" && !graph.edges.some(edge => edge.from === node.id)) return;
+  return modeFor(node)?.output ?? definition(node.kind).output;
 }
 
 export function outputsFor(graph: Graph, node: GraphNode): readonly OutputSocket[] {
@@ -361,6 +504,10 @@ export function outputsFor(graph: Graph, node: GraphNode): readonly OutputSocket
 }
 
 export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false): readonly Socket[] {
+  if (isCablePoint(node)) {
+    const type = cableType(node);
+    return type && (node.kind === "junction" || node.data.side === "target") ? [{ id: cableInput, label: "Input", type }] : [];
+  }
   if (node.kind !== "variable") {
     const def = definition(node.kind);
     if (node.kind === "colorRamp") {
@@ -371,7 +518,7 @@ export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false
     }
     if (node.kind === "fontAxis" && !includeInactive) {
       const choice = fontAxisFor(node.data.tag ?? "wght");
-      const wiredTag = graph.edges.some(edge => edge.to === node.id && edge.input === "tag");
+      const wiredTag = hasConnectedInput(graph, node.id, "tag");
       const toggle = choice?.tag === "italic" && !wiredTag;
       return def.inputs.filter(socket => socket.id !== (toggle ? "value" : "enabled")).map(socket =>
         socket.id === "value" && choice?.tag === "slnt" && !wiredTag ? { ...socket, label: "Angle (°)" } : socket);
@@ -388,8 +535,37 @@ export function isRenderable(type: ValueType | undefined) {
   return type === "visual" || type === "textLayer";
 }
 
+export function inputType(graph: Graph, node: GraphNode, input: string): ValueType | undefined {
+  if (node.kind === "convert" && !graph.edges.some(edge => edge.to === node.id && edge.input === input)) return;
+  return inputsFor(graph, node).find(socket => socket.id === input)?.type;
+}
+
 export function previewType(graph: Graph, node: GraphNode): ValueType | undefined {
   return node.kind === "output" ? "visual" : node.kind === "tempo" ? "number" : outputType(graph, node);
+}
+
+export function isPixelOutput(graph: Graph, node: GraphNode, output?: string): boolean {
+  const seen = new Set<string>();
+  function readsPixels(source: GraphNode, port?: string): boolean {
+    const type = outputType(graph, source, port);
+    if ((type !== "number" && type !== "boolean") || seen.has(source.id)) return false;
+    if (source.kind === "colorRamp" && port === "mask") return true;
+    if (source.kind === "convert" && ["imageToFloat", "imageAlphaToFloat", "imageToBoolean"].includes(modeFor(source)?.id ?? "")) {
+      return hasConnectedInput(graph, source.id, "image");
+    }
+    seen.add(source.id);
+    const inputNode = source.kind === "variable" && !isVariableSetter(graph, source)
+      ? graph.nodes.find(item => item.data.variable === source.data.variable && isVariableSetter(graph, item))
+      : source;
+    if (!inputNode) return false;
+    return inputsFor(graph, inputNode).some(socket => {
+      if (!acceptsPixelField(inputNode, socket.id)) return false;
+      const edge = graph.edges.find(item => item.to === inputNode.id && item.input === socket.id);
+      const upstream = edge && graph.nodes.find(item => item.id === edge.from);
+      return upstream !== undefined && readsPixels(upstream, edge.output);
+    });
+  }
+  return readsPixels(node, output);
 }
 
 export function referenceNode(name: string, aliases: string[]): NodeDrop | undefined {
@@ -404,23 +580,78 @@ export function referenceNode(name: string, aliases: string[]): NodeDrop | undef
   }
 }
 
-export function withEdge(graph: Graph, edge: GraphEdge): Graph | undefined {
-  const from = graph.nodes.find(node => node.id === edge.from);
-  const to = graph.nodes.find(node => node.id === edge.to);
-  if (!from || !to) return;
+function automaticConversionMode(input?: ValueType, output?: ValueType) {
+  return conversionModes.find(mode => !("explicit" in mode) && mode.inputs[0].type === input && mode.output === output)
+    ?? conversionModes.find(mode => !("explicit" in mode) && input === "textLayer" && mode.inputs[0].acceptsTextLayer && mode.output === output);
+}
+
+function acceptsType(input: Socket, output: ValueType) {
+  return input.type === output || (output === "textLayer" && input.acceptsTextLayer) || (output === "color" && input.type === "visual");
+}
+
+export function withEdge(graph: Graph, edge: GraphEdge, inferConversion = true): Graph | undefined {
+  const source = graph.nodes.find(node => node.id === edge.from);
+  const target = graph.nodes.find(node => node.id === edge.to);
+  if (!source || !target || source === target) return;
+  let from = source;
+  let to = target;
   // Mode-specific cables stay on the graph while their sockets are hidden.
-  const input = inputsFor(graph, to, true).find(socket => socket.id === edge.input);
-  const output = outputType(graph, from, edge.output);
-  if (!output || !input || (output !== input.type &&
-    !(output === "textLayer" && input.acceptsTextLayer) &&
-    !(output === "color" && input.type === "visual") &&
-    !((output === "visual" || output === "color") && input === textLayerInput && edge.legacyTextInput) &&
-    !(output === "text" && input.type === "color" && to.kind === "textStyle" && edge.legacyColorInput))) return;
-  if (to.kind === "variable" && graph.nodes.some(node =>
-    node !== to && node.data.variable === to.data.variable && isVariableSetter(graph, node))) return;
-  const edges = graph.edges.filter(existing => existing.to !== edge.to || existing.input !== edge.input);
+  let input = inputsFor(graph, to).find(socket => socket.id === edge.input)
+    ?? (to.kind !== "convert" ? inputsFor(graph, to, true).find(socket => socket.id === edge.input) : undefined);
+  if (!input) return;
+  let output = outputType(graph, from, edge.output);
+  if (from.kind === "convert" && edge.output === undefined && !output) {
+    const current = modeFor(from);
+    const matches = current?.output && (isCablePoint(to) ? current.output === input.type : acceptsType(input, current.output));
+    let mode = current;
+    if (inferConversion && !matches) {
+      const inputSocket = current?.inputs?.[0];
+      const sourceType = inputSocket && inputType(graph, from, inputSocket.id);
+      mode = automaticConversionMode(inputSocket?.type, input.type);
+      if (!mode && !sourceType) mode = conversionModes.find(item => !("explicit" in item) && item.output === input.type);
+    }
+    if (!mode) return;
+    if (inferConversion && from.data.mode !== mode.id) from = { ...from, data: { ...from.data, mode: mode.id } };
+    output = mode.output;
+  }
+  if (!output) return;
+  if (inferConversion && to.kind === "convert" && !inputType(graph, to, edge.input) && !acceptsType(input, output)) {
+    const targetType = outputType(graph, to);
+    const mode = targetType ? automaticConversionMode(output, targetType)
+      : conversionModes.find(item => item.inputs[0].type === output);
+    if (!mode) return;
+    input = mode.inputs[0];
+    edge = { ...edge, input: input.id };
+    to = { ...to, data: { ...to.data, mode: mode.id } };
+  }
+  if (output !== input.type && (isCablePoint(to) || !(
+    acceptsType(input, output) ||
+    ((output === "visual" || output === "color") && input === textLayerInput && edge.legacyTextInput) ||
+    (output === "text" && input.type === "color" && to.kind === "textStyle" && edge.legacyColorInput)))) return;
+  if (from.kind === "cableEnd" && graph.edges.some(existing => existing.from === from.id && (existing.to !== edge.to || existing.input !== edge.input))) return;
+  const edges = graph.edges.filter(existing => existing.to !== edge.to || (to.kind !== "convert" && existing.input !== edge.input));
   edges.push(edge);
-  const next = { ...graph, edges };
+  const nodes = from === source && to === target ? graph.nodes : graph.nodes.map(node => node === source ? from : node === target ? to : node);
+  const next = { ...graph, nodes, edges };
+  if (inferConversion && !acceptsPixelField(to, edge.input) && isPixelOutput(next, from, edge.output)) return;
+  if (inferConversion && to.kind === "convert" && isPixelOutput(next, to) && !isPixelOutput(graph, target)) {
+    // Completing a conversion can turn its already wired output into a pixel field.
+    for (const connection of edges) {
+      const downstream = nodes.find(node => node.id === connection.to);
+      if (!downstream || acceptsPixelField(downstream, connection.input)) continue;
+      const producer = nodes.find(node => node.id === connection.from);
+      const previous = producer === to ? target : producer === from ? source : producer;
+      if (producer && previous && isPixelOutput(next, producer, connection.output) && !isPixelOutput(graph, previous, connection.output)) return;
+    }
+  }
+  if (to.kind === "variable" || to.kind === "junction" || to.kind === "convert") {
+    const setters = new Set<Literal>();
+    for (const node of graph.nodes) {
+      if (!isVariableSetter(next, node)) continue;
+      if (setters.has(node.data.variable)) return;
+      setters.add(node.data.variable);
+    }
+  }
   const pending = [from.id];
   const visited = new Set<string>();
   while (pending.length) {
@@ -436,6 +667,32 @@ export function withEdge(graph: Graph, edge: GraphEdge): Graph | undefined {
     for (const connection of edges) if (connection.to === id) pending.push(connection.from);
   }
   return next;
+}
+
+export function withConvertedEdge(graph: Graph, edge: GraphEdge, locate?: () => { x: number; y: number } | undefined): Graph | undefined {
+  const direct = withEdge(graph, edge);
+  if (direct) return direct;
+  const from = graph.nodes.find(node => node.id === edge.from);
+  const to = graph.nodes.find(node => node.id === edge.to);
+  if (!from || !to || from === to) return;
+  if (to.kind === "convert" && !inputType(graph, to, edge.input)) return;
+  const output = outputType(graph, from, edge.output);
+  const input = inputsFor(graph, to).find(socket => socket.id === edge.input);
+  const mode = automaticConversionMode(output, input?.type);
+  if (!mode) return;
+  if ((mode.id === "imageToFloat" || mode.id === "imageToBoolean") && !acceptsPixelField(to, edge.input)) return;
+  const previous = graph.edges.find(item => item.to === edge.to && item.input === edge.input);
+  const adapter = previous && graph.nodes.find(node => node.id === previous.from);
+  if (isAutomaticConversion(adapter) && adapter?.data.mode === mode.id && graph.edges.some(item =>
+    item.to === adapter.id && item.input === mode.inputs[0].id && item.from === edge.from && item.output === edge.output)) return graph;
+  const position = locate?.();
+  const x = position?.x ?? (from.x + to.x) / 2;
+  const y = position?.y ?? (from.y + to.y) / 2;
+  const converter = makeNode("convert", x, y, { mode: mode.id, automatic: true });
+  const next = withEdge({ ...graph, nodes: [...graph.nodes, converter] }, {
+    from: from.id, output: edge.output, to: converter.id, input: mode.inputs[0].id,
+  });
+  return next && withEdge(next, { from: converter.id, to: to.id, input: edge.input });
 }
 
 export function insertNodeOnEdge(graph: Graph, node: GraphNode, target: GraphEdge, inputId?: string, outputId?: string) {
@@ -456,6 +713,7 @@ export function insertNodeOnEdge(graph: Graph, node: GraphNode, target: GraphEdg
 
 export function keepCompatibleEdges(graph: Graph): Graph {
   let result: Graph = { ...graph, edges: [] };
-  for (const edge of graph.edges) result = withEdge(result, edge) ?? result;
-  return result;
+  // Restore each edge using its saved conversion mode.
+  for (const edge of graph.edges) result = withEdge(result, edge, false) ?? result;
+  return pruneRoutingNodes(result);
 }

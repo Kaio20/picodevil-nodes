@@ -1,4 +1,5 @@
 import { bindNumberDrag } from "./node-number-input";
+import { phosphorIcon } from "./icons";
 
 type Point = { x: number; y: number };
 type Quad = [Point, Point, Point, Point];
@@ -125,7 +126,8 @@ export class NodeProjection {
     const grid = document.createElement("button");
     grid.type = "button";
     grid.className = "nd-button nd-projection-grid-button";
-    grid.textContent = "Grid";
+    grid.append(phosphorIcon("grid-four"));
+    grid.setAttribute("aria-label", "Grid");
     grid.title = "Show a calibration grid in the preview and output";
     grid.setAttribute("aria-pressed", "false");
     grid.addEventListener("click", () => {
@@ -140,13 +142,14 @@ export class NodeProjection {
     const close = document.createElement("button");
     close.className = "nd-button nd-projection-close";
     close.setAttribute("aria-label", "Close projection calibration");
-    close.textContent = "×";
+    close.append(phosphorIcon("x"));
     close.addEventListener("click", () => this.setExpanded(false));
     const resize = document.createElement("button");
     resize.className = "nd-projection-resize";
     resize.type = "button";
     resize.title = "Drag to resize the projection preview";
     resize.setAttribute("aria-label", "Resize projection preview");
+    resize.append(phosphorIcon("arrows-out-simple"));
     resize.addEventListener("pointerdown", event => this.dragResize(event));
     resize.addEventListener("keydown", event => {
       const direction = Number(event.key === "ArrowLeft" || event.key === "ArrowUp")

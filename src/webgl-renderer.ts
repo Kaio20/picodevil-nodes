@@ -3,6 +3,8 @@ import { ladderStep } from './modulate-sizing';
 import { TextureCache } from './texture-cache';
 import { warn } from './warnings';
 import { gradientResolution } from './gradient';
+import type { PixelRaster } from './pixel-field';
+import { compilePixelRaster, fieldVertexSource } from './webgl-pixel-field';
 import {
   compileInto, OP_FLOATS, MAX_OPS,
   OP_SAMPLE, OP_BARREL, OP_PIXELATE, OP_WRAP,
@@ -614,6 +616,7 @@ void main() {
       color.a *= a.w > 0.5 ? s : 1.0 - s;
     } else if (kind == OP_ALPHA) {
       color.a *= a.y;
+      if (a.z > 0.0) color.a *= sampleAny(int(a.z) - 1, gl_FragCoord.xy / u_resolution).r;
     }
   }
 
@@ -813,6 +816,7 @@ interface DrawCommand {
   uvSizeY:     number;
   // Effect parameters (consumed by the effect-compiler when packing the batch).
   alpha:       number;
+  opacityTexture: WebGLTexture | null;
   grey:        number;
   pixUVStepX:  number;
   pixUVStepY:  number;
@@ -909,6 +913,11 @@ export class WebGLRenderer implements Renderer {
   private readonly texCache: TextureCache;
   private readonly maxTexUnits: number;
   private readonly fbos = new Map<string, FBOEntry>();
+  private readonly fieldPrograms = new Map<string, {
+    program: WebGLProgram;
+    samplers: (WebGLUniformLocation | null)[];
+    values: WebGLUniformLocation | null;
+  }>();
   /** Recycled auto-modulator FBO entries. Re-eval renumbers auto FBOs (name
    *  churn); popping a same-size entry here makes that a Map move instead of a
    *  multi-MB texImage2D realloc — no eval-time hitch. */
@@ -1086,6 +1095,7 @@ export class WebGLRenderer implements Renderer {
     // FBO handles are dead too; drop the map so getOrCreateFBO rebuilds them at the
     // current size on next use. (No deleteFramebuffer — the old context is gone.)
     this.fbos.clear();
+    this.fieldPrograms.clear();
     this.fboFreePool.length = 0;
     this.currentFBO = null;
     this.currentViewW = this.w;
@@ -1199,11 +1209,54 @@ export class WebGLRenderer implements Renderer {
     return { tex: null, uvScaleX: 1, uvScaleY: 1 };
   }
 
+  drawPixelRaster(raster: PixelRaster): void {
+    const { gl } = this;
+    const { source, textures, values } = compilePixelRaster(raster);
+    if (textures.length > this.maxTexUnits) throw new Error('Too many image inputs in a single pixel field.');
+    this.flushPending();
+    let field = this.fieldPrograms.get(source);
+    if (!field) {
+      const program = createProgram(gl, fieldVertexSource, source);
+      field = {
+        program, values: gl.getUniformLocation(program, 'u_values[0]'),
+        samplers: textures.map((_, index) => gl.getUniformLocation(program, `u_texture${index}`)),
+      };
+      if (this.fieldPrograms.size >= 24) {
+        const oldest = this.fieldPrograms.keys().next().value!;
+        gl.deleteProgram(this.fieldPrograms.get(oldest)!.program);
+        this.fieldPrograms.delete(oldest);
+      }
+    } else this.fieldPrograms.delete(source);
+    this.fieldPrograms.set(source, field);
+
+    gl.useProgram(field.program);
+    let ready = true;
+    textures.forEach((texture, index) => {
+      gl.activeTexture(gl.TEXTURE0 + index);
+      const tex = typeof texture === 'string'
+        ? this.resolveAuxFbo(texture, 'pixel field input', 'with zero input').tex
+        : this.texCache.get({ kind: 'gradient', gradient: texture });
+      if (!tex) ready = false;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(field.samplers[index], index);
+    });
+    if (field.values) gl.uniform1fv(field.values, values);
+    gl.bindVertexArray(null);
+    if (ready) gl.drawArrays(gl.TRIANGLES, 0, 3);
+    textures.forEach((_, index) => {
+      gl.activeTexture(gl.TEXTURE0 + index);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    });
+    gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(this.program);
+  }
+
   drawTile(p: TileParams): void {
     let tex: WebGLTexture | null;
     let srcW: number, srcH: number;
     let fboSource = false;
     const rampTexture = p.colorRamp ? this.texCache.get({ kind: 'gradient', gradient: p.colorRamp }) : null;
+    const opacityTexture = p.opacityFieldSrc ? this.resolveAuxFbo(p.opacityFieldSrc, 'opacity field', 'with uniform opacity').tex : null;
 
     // For a sub-viewport FBO source (a footprint-sized `.render()` bake), the
     // rendered content occupies only [0,viewW]×[0,viewH] of the texture's
@@ -1326,6 +1379,7 @@ export class WebGLRenderer implements Renderer {
         uvOffsetX: uvOffX, uvOffsetY: uvOffY,
         uvSizeX: uvSzX, uvSizeY: uvSzY,
         alpha:        p.alpha,
+        opacityTexture,
         grey:         p.grey ?? 0,
         // Cell-local step (see the fill/cover branch): pixelate px over the
         // displayed dispW px. No absCropw factor — the crop scale is applied at the map.
@@ -1393,6 +1447,7 @@ export class WebGLRenderer implements Renderer {
       uvSizeX,
       uvSizeY,
       alpha:       p.alpha,
+      opacityTexture,
       grey:        p.grey ?? 0,
       // Pixelate runs in cell-local space (before the crop map), so the step is
       // in local units: pixelate screen px over the cell's cellW px = pixelate/cellW.
@@ -1510,6 +1565,7 @@ export class WebGLRenderer implements Renderer {
       const opCount = compileInto({
         texIndex:     unitOf(cmd.texture),
         alpha:        cmd.alpha,
+        opacityTexIndex: unitOf(cmd.opacityTexture),
         grey:         cmd.grey,
         hueRot:       cmd.hueRot,
         pixUVStepX:   cmd.pixUVStepX,
@@ -1581,6 +1637,7 @@ export class WebGLRenderer implements Renderer {
       if (cmd.modTexture && !out.includes(cmd.modTexture)) out.push(cmd.modTexture);
       if (cmd.matteTexture && !out.includes(cmd.matteTexture)) out.push(cmd.matteTexture);
       if (cmd.rampTexture && !out.includes(cmd.rampTexture)) out.push(cmd.rampTexture);
+      if (cmd.opacityTexture && !out.includes(cmd.opacityTexture)) out.push(cmd.opacityTexture);
       return out;
     };
 
@@ -1835,12 +1892,14 @@ export class WebGLRenderer implements Renderer {
         }
       }
       for (const entry of this.fboFreePool) this.deleteFBOEntry(entry);
+      for (const field of this.fieldPrograms.values()) gl.deleteProgram(field.program);
       gl.deleteProgram(this.program);
       gl.deleteVertexArray(this.vao);
       gl.deleteBuffer(this.instanceVBO);
       gl.deleteBuffer(this.opsUBO);
     }
     this.fbos.clear();
+    this.fieldPrograms.clear();
     this.fboFreePool.length = 0;
     gl.getExtension('WEBGL_lose_context')?.loseContext();
   }

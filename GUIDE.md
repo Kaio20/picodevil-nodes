@@ -14,6 +14,25 @@ Open the browser to work in the node graph. Select **Code** to open the text edi
 
 Create a named, typed variable under **Variables**, then add a **Variable** node and select it. Connect a source to the input to turn the node into **Set Variable**. Other **Variable** nodes with the same selection and an empty input show **Get Variable** and read the connected value. Each variable can have one **Set Variable** node. For fixed numbers, strings, or booleans, use **Constant** under **Sources**.
 
+Under **Expressions** in **Add Node**, choose **Add**, **Subtract**, **Multiply**, **Divide**, **Remainder**, **Minimum**, or **Maximum** to calculate with two floats. You can switch operations later in the node's **Mode** dropdown. Enter values directly or connect signals or Float variables to **A** and **B**. Division and remainder return `0` when **B** is `0`. For image layers, search for **Add** or **Multiply** and select the corresponding **Blend** result.
+
+## Type conversion and pixel values
+
+Connect two ports to convert automatically between compatible types. The bandages icon marks the conversion. You can also add a **Conversion** node under **Expressions**. You can connect its input and output in either order. An unconnected port stays neutral and can be assigned to another compatible type by connecting a cable. Search for a specific conversion such as **Image Alpha to Float** to select it explicitly.
+
+| Connection | Result |
+| --- | --- |
+| String → Image or Text | Displays the string. Connect to a Text input to style it further. |
+| Image or Text → Float | Uses brightness multiplied by alpha at each canvas pixel. Use **Image Alpha to Float** to read just alpha. |
+| Float → Image | Displays 0–1 as grayscale. A pixel value becomes a grayscale image. |
+| Float ↔ Boolean | Zero becomes `false`. Nonzero becomes `true`. `false` and `true` map to `0` and `1`. The same rules apply per pixel. |
+| Color → Image or Float | Produces a solid fill or a brightness value multiplied by the color's alpha. |
+| String → Float or Color | Parses a number or a CSS color. Invalid input gives `0` or transparent black. |
+
+To use a gradient as a mask, connect **Color Ramp → Image** to the **Opacity** value input on an **Opacity** node. Connect the layer you want to mask to the node's **Image** input. The ramp's dark pixels hide the layer and its light pixels reveal it. Use the ramp's **Mask** output when its stop alpha should control opacity. To fade the entire mask by half, pass it through **Expression → Multiply** with **B** set to `0.5`.
+
+**Expression**, **Range**, Float and Boolean variables, and cable junctions carry pixel values. **Color Ramp → Factor** can use them to look up the ramp at each pixel. **Opacity** applies the mask in canvas coordinates. Inputs such as **Tempo**, position and font size need a single value for the whole frame.
+
 ## Font variation in the node graph
 
 Choose a font in **Text Style**, then connect its **Text** output to **Font Shape** to adjust Weight, Width, Height, or Optical Size. Weight, Width, and Optical Size use the axes supported by the font. Height stretches text vertically, with 1 keeping the original height. Enter a value or connect a signal for each input you want to change. Empty inputs keep the current value.
@@ -28,7 +47,7 @@ Connect a **Color** output to a **Color** input such as the one on **Text Style*
 
 Find **Color Ramp** under **Image**. Use **+** or double-click the gradient strip to add a stop. Each stop has a **Color** input beneath the strip. Set its color with the swatch or connect a **Color** node. Drag the handles to move the stops and reorder their inputs. Choose **Linear** for smooth transitions or **Constant** for hard steps.
 
-Connect an **Image** to colorize it. Shadows use the left side of the ramp, highlights use the right, and each pixel's opacity is multiplied by the corresponding ramp opacity. Leave the **Image** input empty to output the full RGB ramp. **Alpha** gives the opacity at **Factor**, from 0 at the left edge to 1 at the right.
+Connect an **Image** to colorize it. Shadows use the left side of the ramp, highlights use the right, and each pixel's opacity is multiplied by the corresponding ramp opacity. With **Image** empty, the ramp spans the width of the canvas. Connect a pixel field to **Factor** to look up the ramp at each pixel. **Alpha** gives the opacity sampled at **Factor**, with 0 at the left edge and 1 at the right. **Mask** gives the rendered ramp's opacity per pixel.
 
 ## Projection calibration
 

@@ -1,4 +1,4 @@
-import { Pattern, pure, reify, sine, cosine, saw, tri, stack } from "@strudel/core";
+import { Pattern, pure, reify, sine, cosine, saw, tri, stack, silence } from "@strudel/core";
 import { mini } from "@strudel/mini";
 import { color } from "./color-pattern";
 import { s } from "./screen-pattern";
@@ -8,6 +8,7 @@ import { stackN } from "./grid-stack";
 import { fft, previewFft } from "./fft-audio";
 import { isTexture, resolveMedia, resolveMediaId } from "./media-registry";
 import { resolveUrl } from "./server-config";
+import { catalogTexture } from "./texture-library";
 import { CYCLES_PER_SECOND, getRuntimeCps, setRuntimeCps } from "./config";
 import { CpsController } from "./cps-controller";
 import { createMetrics } from "./frame-metrics";
@@ -15,11 +16,12 @@ import { FrameRenderer } from "./renderer";
 import { WebGLRenderer } from "./webgl-renderer";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { hashStr, withLayoutCounter } from "./layout-counter";
-import { collectScreens, getNamedScreenIndices, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
-import { fftBands, inputsFor, isFontVariation, isRenderable, isVariableSetter, modeFor, outputType, previewType, rampInterpolation, rampStops, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
+import { collectScreens, getNamedScreenIndices, nextAutoRenderName, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
+import { acceptsPixelField, expressionOperations, fftBands, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, modeFor, outputType, previewType, rampInterpolation, rampStops, signalGraph, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
 import { gradientSampler, type Gradient } from "./gradient";
 import { colorRamp } from "./effects-controls";
-import { clampUnit, colorCss, colorFromCss, isColorValue, whiteColor, type ColorValue } from "./color-value";
+import { clampUnit, colorCss, colorFromCss, colorHex, isColorValue, rgbFromHex, rgbHex, whiteColor, type ColorValue } from "./color-value";
+import type { PixelExpression, PixelOperator, PixelRaster } from "./pixel-field";
 import "./index-patterns";
 import "./shuffle-stack";
 
@@ -40,7 +42,16 @@ function makeTestCard(): Pattern {
   return stack(...strip(bars, 0.36, 0.72), ...strip(tones, 0.86, 0.28));
 }
 
-type Value = Pattern | Literal;
+class PixelField {
+  constructor(readonly signal: Pattern) {}
+
+  map(fn: (value: PixelExpression) => PixelExpression) {
+    return new PixelField(this.signal.withValue(fn));
+  }
+}
+
+type UniformValue = Pattern | Literal;
+type Value = UniformValue | PixelField;
 type PreviewValue = { layer: string } | { value: Value } | { error: string };
 const sceneSource = /(?:^|[\s<\[,(])(?:all|prev)(?=$|[\s>\],):*?!/@])/;
 const waveforms: Record<string, Pattern> = { sine, cosine, saw, tri };
@@ -60,6 +71,89 @@ function bounded(value: Value, max: number): Pattern {
   return reify(value).fmap((item: unknown) => Math.max(1, Math.min(max, Math.round(Number(item)) || 1)));
 }
 
+function mapScalar<T extends Literal>(value: UniformValue, convert: (item: unknown) => T): UniformValue {
+  return value instanceof Pattern ? value.withValue(convert) : convert(value);
+}
+
+function fieldMath(operator: PixelOperator, a: Value, b: Value): PixelField {
+  const asField = (value: Value) => value instanceof PixelField ? value.signal : reify(value).withValue(Number);
+  return new PixelField(asField(a).withValue((a: PixelExpression) => (b: PixelExpression): PixelExpression =>
+    ({ kind: "math", operator, a, b })).appBoth(asField(b)));
+}
+
+function bakeImage(image: Pattern) {
+  const layer = nextAutoRenderName();
+  registerAutoHidden(layer, image);
+  return layer;
+}
+
+function imageField(image: Pattern, channel: "luma" | "alpha"): PixelField {
+  const value: PixelExpression = { kind: "image", layer: bakeImage(image), channel };
+  return new PixelField(pure(value));
+}
+
+function fieldRaster(field: PixelField, ramp?: Pattern): Pattern {
+  const raster = ramp ? field.signal.withValue((value: PixelExpression) => (gradient: Gradient): PixelRaster =>
+    ({ value, gradient })).appBoth(ramp) : field.signal.withValue((value: PixelExpression): PixelRaster => ({ value }));
+  return raster.withValue((raster: PixelRaster) => ({ _type: "pixelField", raster }));
+}
+
+function fieldImage(field: PixelField, ramp?: Pattern): Pattern {
+  return pure({ _type: "pattern", src: bakeImage(fieldRaster(field, ramp)) });
+}
+
+const pixelBoolean = (value: PixelExpression): PixelExpression => ({ kind: "boolean", value });
+const transparent = { hex: "#000000", alpha: 0 };
+
+function grayColor(value: unknown): ColorValue {
+  const gray = clampUnit(Number(value) || 0);
+  return { hex: rgbHex([gray, gray, gray]), alpha: 1 };
+}
+
+function colorBrightness({ hex, alpha }: ColorValue): number {
+  const [r, g, b] = rgbFromHex(hex);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) * alpha;
+}
+
+function convertValue(mode: string | undefined, value: Value): Value {
+  if (value instanceof PixelField) {
+    if (mode === "floatToImage" || mode === "booleanToImage") return fieldImage(value);
+    return mode === "floatToBoolean" ? value.map(pixelBoolean) : value;
+  }
+  const asText = () => mapScalar(value, item => isColorValue(item) ? colorHex(item) : String(item));
+  switch (mode) {
+    case "imageToFloat": return imageField(value as Pattern, "luma");
+    case "imageToBoolean": return imageField(value as Pattern, "luma").map(pixelBoolean);
+    case "imageAlphaToFloat": return imageField(value as Pattern, "alpha");
+    case "floatToBoolean": return mapScalar(value, Boolean);
+    case "booleanToFloat": return mapScalar(value, Number);
+    case "floatToString":
+    case "booleanToString":
+    case "colorToString": return asText();
+    case "stringToFloat": return mapScalar(value, item => Number.isFinite(Number(item)) ? Number(item) : 0);
+    case "stringToBoolean": return mapScalar(value, item => !["", "0", "false", "off", "no"].includes(String(item).trim().toLowerCase()));
+    case "stringToColor": return mapScalar(value, item => colorFromCss(String(item)) ?? transparent);
+    case "floatToColor":
+    case "booleanToColor": return mapScalar(value, grayColor);
+    case "colorToFloat": return mapScalar(value, color => colorBrightness(color as ColorValue));
+    case "colorToBoolean": return mapScalar(value, color => Boolean(colorBrightness(color as ColorValue)));
+    case "textToString": return (value as Pattern).withValue((item: { text?: string }) => item.text ?? "");
+    case "floatToImage":
+    case "booleanToImage": return solidImage(mapScalar(value, grayColor));
+    case "stringToImage":
+    case "stringToText":
+    case "floatToText":
+    case "booleanToText":
+    case "colorToText": return text(asText() as string | Pattern) as Pattern;
+    default: throw new Error("Choose a conversion mode.");
+  }
+}
+
+function numberChoices(value: unknown): number[] {
+  const choices = String(value).trim().split(/[\s,]+/).filter(Boolean).map(Number);
+  return choices.every(Number.isFinite) ? choices : [];
+}
+
 function buildValues(graph: Graph, preview: boolean) {
   const values = new Map<string, Value>();
   const visiting = new Set<string>();
@@ -75,16 +169,25 @@ function buildValues(graph: Graph, preview: boolean) {
     if (visiting.has(id)) throw new Error("This connection creates a cycle.");
     visiting.add(id);
     try {
+      const factorEdge = node.kind === "colorRamp" && output !== "alpha" && output !== rampPreview
+        ? incoming.get(node.id + ":factor") : undefined;
+      const factorSource = factorEdge && nodes.get(factorEdge.from);
+      const spatialFactor = factorSource && isPixelOutput(graph, factorSource, factorEdge.output);
       const inputs = Object.fromEntries(inputsFor(graph, node).flatMap(socket => {
-        if (node.kind === "colorRamp" && socket.id === "factor" && output !== "alpha") return [];
-        if (node.kind === "colorRamp" && socket.id === "image" && output !== undefined) return [];
         const source = incoming.get(node.id + ":" + socket.id);
+        if (node.kind === "colorRamp" && socket.id === "factor" && (output === rampPreview || (output !== "alpha" && !spatialFactor))) return [];
+        if (node.kind === "colorRamp" && socket.id === "image" && (output === rampPreview || output === "alpha" || spatialFactor)) return [];
         if (node.kind === "variable" && !source) return [];
         let value = source ? read(source.from, source.output) : node.data[socket.id] ?? socket.default;
         if (source && (socket.type === "visual" || source.legacyTextInput) && outputType(graph, nodes.get(source.from)!, source.output) === "color") {
           value = solidImage(value!);
         }
         if (value !== undefined) {
+          if (value instanceof PixelField) {
+            if (!acceptsPixelField(node, socket.id)) throw new Error(`${socket.label} needs one value for the whole frame.`);
+            if (socket.unitInterval) value = value.map(item => ({ kind: "clamp", value: item }));
+            return [[socket.id, value] as const];
+          }
           // withValue preserves per-event sampling for random signal sources.
           if (socket.unitInterval) value = reify(value).withValue((item: unknown) => clampUnit(Number(item)));
           return [[socket.id, value] as const];
@@ -121,6 +224,8 @@ function buildNode(
     case "texture": {
       const mediaId = String(node.data.media ?? "");
       const texture = node.kind === "texture";
+      const catalog = texture && preview && catalogTexture(mediaId);
+      if (catalog) return pure({ _type: "image", src: catalog.url, begin: 0, end: 1 });
       const resolveSource = () => {
         const entry = resolveMediaId(mediaId);
         return entry && (!texture || isTexture(entry)) ? entry : undefined;
@@ -135,9 +240,18 @@ function buildNode(
     }
     case "testCard": return makeTestCard();
     case "constant": return input.value;
+    case "expression": {
+      const { id, evaluate } = expressionOperations.find(operation => operation.id === mode) ?? expressionOperations[0];
+      const { a, b } = input;
+      if (a instanceof PixelField || b instanceof PixelField) return fieldMath(id, a, b);
+      if (!(b instanceof Pattern)) return mapScalar(a, left => evaluate(Number(left), Number(b)));
+      if (!(a instanceof Pattern)) return mapScalar(b, right => evaluate(Number(a), Number(right)));
+      return a.withValue((left: unknown) => (right: unknown) => evaluate(Number(left), Number(right))).appBoth(b);
+    }
+    case "convert": return convertValue(mode, input[modeFor(node)!.inputs![0].id]);
     case "screen": {
-      const expression = String(input.pattern);
-      if (preview && sceneSource.test(expression)) throw new Error("This source uses the full scene. Run to see it in Output.");
+      const expression = input.pattern instanceof Pattern ? input.pattern : String(input.pattern);
+      if (preview && typeof expression === "string" && sceneSource.test(expression)) throw new Error("This source uses the full scene. Run to see it in Output.");
       return s(expression) as Pattern;
     }
     case "color": {
@@ -172,9 +286,16 @@ function buildNode(
         })) };
         return previous;
       });
+      const { factor } = input;
+      if (factor instanceof PixelField && (output === "alpha" || output === "mask")) {
+        return new PixelField(ramp.fmap((gradient: Gradient) => (value: PixelExpression): PixelExpression =>
+          ({ kind: "rampAlpha", gradient, value })).appBoth(factor.signal));
+      }
       if (output !== "alpha") {
-        if (image) return call(colorRamp(ramp, image), "render");
-        return ramp.fmap((gradient: Gradient) => ({ _type: "gradient", gradient }));
+        const result = factor instanceof PixelField ? fieldImage(factor, ramp)
+          : image ? call(colorRamp(ramp, image), "render")
+          : ramp.fmap((gradient: Gradient) => ({ _type: "gradient", gradient }));
+        return output === "mask" ? imageField(result, "alpha") : result;
       }
       let sampled: Gradient | undefined;
       let sample: ReturnType<typeof gradientSampler>;
@@ -182,7 +303,7 @@ function buildNode(
         if (sampled !== gradient) { sample = gradientSampler(gradient); sampled = gradient; }
         const current = sample;
         return (factor: number) => current(factor)[3];
-      }).appBoth(reify(input.factor));
+      }).appBoth(reify(factor));
     }
     case "waveform": return waveforms[mode ?? "sine"];
     case "rand": return rand;
@@ -190,11 +311,26 @@ function buildNode(
       const band = fftBands.includes(node.data.band as Band) ? node.data.band as Band : "bass";
       return preview ? previewFft(band) : fft[band];
     }
-    case "numberPattern": return (mini(String(input.pattern)) as Pattern).fmap((value: unknown) => Number(value) || 0);
-    case "range": return call(reify(input.signal), "range", input.min, input.max);
+    case "numberPattern": {
+      const pattern = input.pattern instanceof Pattern ? input.pattern : mini(String(input.pattern)) as Pattern;
+      return pattern.withValue((value: unknown) => Number(value) || 0);
+    }
+    case "range": {
+      const { signal, min, max } = input;
+      if ([signal, min, max].some(value => value instanceof PixelField)) {
+        return fieldMath("add", min, fieldMath("multiply", signal, fieldMath("subtract", max, min)));
+      }
+      return call(reify(signal), "range", min, max);
+    }
     case "choose": {
-      const choices = String(input.choices).trim().split(/[\s,]+/).filter(Boolean).map(Number);
-      if (!choices.length || !choices.every(Number.isFinite)) throw new Error("Enter numbers separated by commas.");
+      if (input.choices instanceof Pattern) {
+        return input.choices.withValue((value: unknown) => {
+          const choices = numberChoices(value);
+          return choices.length ? choose(...choices) : silence;
+        }).innerJoin();
+      }
+      const choices = numberChoices(input.choices);
+      if (!choices.length) throw new Error("Enter numbers separated by commas.");
       return choose(...choices);
     }
     case "segment": return call(reify(input.signal), "segment", input.value);
@@ -240,6 +376,10 @@ function buildNode(
     case "renderLayer": return renderLayer(node.id, image);
     case "alpha":
       if (mode === "white" || mode === "black") return call(image, "lumaToAlpha", mode);
+      if (input.value instanceof PixelField) {
+        const opacityFieldSrc = bakeImage(fieldRaster(input.value));
+        return image.withValue((value: object) => ({ ...value, opacityFieldSrc }));
+      }
       return call(image, "alpha", input.value);
     case "hue": return call(image, "huerot", input.value);
     case "grey": return call(image, "grey", input.value);
@@ -275,12 +415,15 @@ function buildNode(
       return read(setter.id);
     }
     case "output": return image;
+    case "junction":
+    case "cableEnd": throw new Error("A cable point cannot be evaluated directly.");
   }
 }
 
 function previewKey(target: PreviewTarget) { return JSON.stringify([target.id, Boolean(target.showRamp)]); }
 
-function compile(graph: Graph, targets?: readonly PreviewTarget[]) {
+function compile(draft: Graph, targets?: readonly PreviewTarget[]) {
+  const graph = signalGraph(draft);
   const previous = snapshotRegistry();
   resetRegistry();
   try {
@@ -301,9 +444,9 @@ function compile(graph: Graph, targets?: readonly PreviewTarget[]) {
         if (!node) continue;
         try {
           const value = read(id, target.showRamp ? rampPreview : undefined);
-          if (!target.showRamp && isRenderable(previewType(graph, node))) {
+          if (value instanceof PixelField || (!target.showRamp && isRenderable(previewType(graph, node)))) {
             const layer = `__auto_preview_${id}`;
-            registerAutoHidden(layer, value as Pattern);
+            registerAutoHidden(layer, value instanceof PixelField ? fieldRaster(value) : value as Pattern);
             previews.set(key, { layer });
           } else previews.set(key, { value });
         } catch (error) {
@@ -344,14 +487,19 @@ export class NodePreviews {
   private signature = "";
   private nextFrame = 0;
   private nextBatch = 0;
+  private priority?: string;
   private idleSince = 0;
   private unavailable = false;
 
-  draw(graph: Graph, visibleTargets: () => PreviewTarget[], now: number, cycle: number, ratio: number) {
+  draw(graph: Graph, visibleTargets: () => PreviewTarget[], now: number, cycle: number, ratio: number, priority?: string) {
     if (now < this.nextFrame) return;
     this.nextFrame = now + 1000 / 15;
-    const targets = visibleTargets();
-    if (!targets.length) {
+    const visible = visibleTargets();
+    const focused = priority ?? this.priority;
+    this.priority = priority;
+    const preferred = focused ? visible.filter(target => target.id === focused) : [];
+    const targets = preferred.length ? visible.filter(target => target.id !== focused) : visible;
+    if (!visible.length) {
       this.idleSince ||= now;
       if (this.renderer && now - this.idleSince > 5000) this.dispose();
       this.clock = undefined;
@@ -359,9 +507,11 @@ export class NodePreviews {
     }
     this.idleSince = 0;
     // Rotate the first target so an expensive preview can't consume the budget every tick.
-    const start = this.nextBatch % targets.length;
-    const batch = [...targets.slice(start), ...targets.slice(0, start)].slice(0, 4);
-    this.nextBatch = start + (targets.length > 4 ? 4 : 1);
+    const start = targets.length ? this.nextBatch % targets.length : 0;
+    const budget = 4 - preferred.length;
+    const rotating = [...targets.slice(start), ...targets.slice(0, start)];
+    const batch = preferred.concat(rotating.slice(0, budget));
+    this.nextBatch = start + (targets.length > budget ? budget : 1);
     const signature = batch.map(previewKey).join(",");
     if (!this.clock) {
       this.clock = new CpsController(CYCLES_PER_SECOND, now);
@@ -404,7 +554,10 @@ export class NodePreviews {
       catch { this.unavailable = true; return; }
       this.canvas = canvas;
       this.pool = createVideoPoolManager({
-        resolveMediaUrl: mediaUrl,
+        resolveMediaUrl: (name, base) => {
+          const texture = catalogTexture(name);
+          return texture ? resolveUrl(texture.url) : mediaUrl(name, base);
+        },
         createElement: () => Object.assign(document.createElement("video"), { crossOrigin: "anonymous" }),
         onDestroyElement: el => this.renderer?.releaseSource(el),
         maxFreeTotal: 12,
@@ -440,6 +593,8 @@ export class NodePreviews {
       const context = target.canvas.getContext("2d")!;
       context.globalCompositeOperation = "copy";
       context.drawImage(this.canvas, 0, 0);
+      target.canvas.hidden = false;
+      target.samples.length = 0;
       target.status.textContent = "";
       return;
     }
@@ -470,6 +625,10 @@ export class NodePreviews {
     target.status.textContent = typeof value === "number" ? String(Number(value.toFixed(3))) : String(value ?? "—");
     if (!target.canvas) return;
     const g = target.canvas.getContext("2d")!;
+    if (target.element.dataset.type === "number" && target.canvas.height !== 36) {
+      target.canvas.width = 200;
+      target.canvas.height = 36;
+    }
     const { width, height } = target.canvas;
     g.clearRect(0, 0, width, height);
     target.color = undefined;

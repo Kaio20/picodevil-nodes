@@ -1,4 +1,4 @@
-import { fontAxisFor, fontVariationFor, isFontVariation, isRampStops, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, nodeKinds, outputType, rampInterpolation, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
+import { cableType, fontAxisFor, fontVariationFor, isCablePoint, isFontVariation, isRampStops, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, nodeKinds, outputType, rampInterpolation, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
 import { defaultGradient, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
 import { isColorValue, whiteColor } from "./color-value";
 import type { GraphView } from "./node-editor";
@@ -18,6 +18,7 @@ function validGraph(graph: Graph | undefined): graph is Graph {
   return Boolean(graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges) && Array.isArray(graph.variables) &&
     graph.nodes.every(node => node && typeof node.id === "string" && nodeKinds.includes(node.kind) &&
       Number.isFinite(node.x) && Number.isFinite(node.y) && node.data && typeof node.data === "object" &&
+      (!isCablePoint(node) || (cableType(node) && (node.kind === "junction" || node.data.side === "source" || node.data.side === "target"))) &&
       Object.entries(node.data).every(([key, value]) => typeof value === "string" || typeof value === "boolean" ||
         (typeof value === "number" && Number.isFinite(value)) || isColorValue(value) ||
         (node.kind === "colorRamp" && key === "stops" && isRampStops(value)))) &&

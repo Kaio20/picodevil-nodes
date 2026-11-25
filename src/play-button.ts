@@ -1,3 +1,5 @@
+import { phosphorIcon } from "./icons";
+
 export interface PlayButton {
   /** The button element (appended to the parent on creation). */
   el: HTMLButtonElement;
@@ -8,12 +10,6 @@ export interface PlayButton {
    */
   setDirty(dirty: boolean): void;
 }
-
-// A play triangle that fills the round button. Pure inline SVG so it needs no
-// asset pipeline and inherits `currentColor`.
-const PLAY_ICON =
-  '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">' +
-  '<path fill="currentColor" d="M8 5.5v13l11-6.5z"/></svg>';
 
 /**
  * A round "evaluate" button (bottom-left of the screen) that signals when the
@@ -28,7 +24,7 @@ export function createPlayButton(parent: HTMLElement, onPlay: () => void): PlayB
   btn.type = "button";
   btn.setAttribute("aria-label", "Evaluate code");
   btn.title = "Evaluate (Ctrl/Cmd-Enter)";
-  btn.innerHTML = PLAY_ICON;
+  btn.append(phosphorIcon("play"));
   btn.addEventListener("click", (e) => {
     e.preventDefault();
     onPlay();

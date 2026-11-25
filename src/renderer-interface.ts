@@ -1,4 +1,5 @@
 import type { Gradient } from './gradient';
+import type { PixelRaster } from './pixel-field';
 
 export const fitModes = ["cover", "contain", "fill", "none", "tile", "tilecenter"] as const;
 export type FitMode = typeof fitModes[number];
@@ -56,6 +57,8 @@ export interface TileParams {
   croph: number;
   fit: FitMode;
   alpha: number;
+  /** Full-canvas Float field used as a per-pixel opacity multiplier. */
+  opacityFieldSrc?: string;
   blend: string;
   /** Z rotation in turns (full rotation = 1). */
   rotateZ: number;
@@ -128,6 +131,8 @@ export interface Renderer {
   beginFrame(): void;
   /** Draw a single tile with the given parameters. */
   drawTile(params: TileParams): void;
+  /** Draw a pixel field across the current hidden render target. */
+  drawPixelRaster?(raster: PixelRaster): void;
   /** Finalise and present the frame. No-op for Canvas 2D; flushes draw list for WebGL. */
   endFrame(): void;
   /**

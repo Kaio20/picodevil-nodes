@@ -1,3 +1,5 @@
+@import "@phosphor-icons/web/regular";
+
 /* ===========================================================================
    Design tokens
    The mono stack + the small grey palette below were previously re-typed dozens
@@ -304,8 +306,7 @@ body {
   justify-content: center;
   cursor: pointer;
   color: var(--fg-bright);
-  /* nudge the triangle a hair right so it reads as optically centred */
-  padding-left: 2px;
+  font-size: 30px;
   -webkit-tap-highlight-color: transparent;
   transition: opacity 0.2s ease, background 0.2s ease,
     box-shadow 0.2s ease, transform 0.08s ease;
@@ -562,10 +563,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 4px 8px;
-}
-
-.vid-view-toggle svg {
-  display: block;
+  font-size: 16px;
 }
 
 .pd-input {
@@ -833,6 +831,9 @@ body {
 /* Upload/download/transcode progress badge (bottom-right, in the flex bar).
    Carries its own background so it stays legible over the thumbnail. */
 .thumb-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   flex: 0 0 auto;
   padding: 1px 4px;
   font-size: 10px;
@@ -857,11 +858,9 @@ body {
   text-overflow: ellipsis;
 }
 
-/* Stream status dot; background (active vs disconnected) is set inline in JS. */
+/* Stream status colour is set inline in JS. */
 .vid-status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+  font-size: 12px;
 }
 
 .vid-name {
@@ -911,6 +910,9 @@ body {
 .vid-btn-reconnect { color: #8c8; }
 
 .vid-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
   font-size: 13px;
   color: var(--fg-mid);
@@ -983,12 +985,8 @@ body {
   gap: 6px;
 }
 
-/* background (connection-status colour) set inline in JS */
 .server-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  font-size: 11px;
   flex-shrink: 0;
 }
 

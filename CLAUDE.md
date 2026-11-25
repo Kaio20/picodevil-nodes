@@ -76,6 +76,8 @@ The Projection panel and its live output window are implemented in `src/node-pro
 
 The node graph's Color type carries sRGB and alpha. Color inputs and gradient stops share the picker in `src/node-color-input.ts`. Image inputs render connected Color values as solid fills.
 
+Node conversions are defined in `src/node-graph.ts`. Image-to-Float produces a canvas-space field. `src/node-runtime.ts` carries it through Float math, variables, ramps and opacity. `src/webgl-pixel-field.ts` evaluates the field in a hidden GPU pass when the graph needs pixels for a mask or image.
+
 1. `src/main.ts` maintains a `screens` array collected from `.p()` registrations each eval cycle.
 2. The transpiler converts `$: expr` lines into `expr.p("$")` calls, and wraps double-quoted strings in `mini()`.
 3. The render loop runs at requestAnimationFrame rate. Each frame it:

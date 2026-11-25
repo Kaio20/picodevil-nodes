@@ -1,4 +1,5 @@
 import { type MediaEntry } from "./media-registry";
+import { phosphorIcon } from "./icons";
 
 /**
  * Thumbnail cell helpers, shared by the videos tab's two modes: the grid ("view"
@@ -40,7 +41,7 @@ export function makeThumbCell(
     // otherwise it's still generating. Name is still shown + clickable.
     const ph = document.createElement("span");
     ph.className = "thumb-placeholder";
-    ph.textContent = entry.type === "stream" ? "◉" : entry.unavailable ? "⚠" : "…";
+    ph.append(phosphorIcon(entry.type === "stream" ? "broadcast" : entry.unavailable ? "warning" : "dots-three"));
     cell.appendChild(ph);
   }
 

@@ -47,6 +47,7 @@
     "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.16",
+    "@phosphor-icons/web": "^2.1.2",
     "@strudel/core": "^1.2.6",
     "@strudel/mini": "^1.2.6",
     "acorn": "^8.16.0",

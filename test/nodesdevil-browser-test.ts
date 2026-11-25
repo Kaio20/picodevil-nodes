@@ -26,6 +26,11 @@ async function drag(page: Page, source: Locator, destination: Locator | { x: num
   await page.mouse.up();
 }
 
+async function choose(card: Locator, picker: Locator, name: string) {
+  await picker.click();
+  await card.getByRole("option", { name, exact: true }).click();
+}
+
 async function pixel(canvas: Locator, x = 0.03, y = 0.03) {
   return canvas.evaluate((node, point) => {
     const c = node as HTMLCanvasElement;
@@ -330,7 +335,7 @@ try {
   const branchOutput = outputs.last();
   const branchHeader = branchOutput.locator("header");
   assert.notEqual(await branchOutput.getAttribute("data-node-id"), await originalOutput.getAttribute("data-node-id"));
-  assert.equal(await branchOutput.getByRole("combobox", { name: "Layer order" }).inputValue(), "1");
+  assert.equal(await branchOutput.getByRole("combobox", { name: "Layer order" }).getAttribute("data-value"), "1");
   assert.equal(await wires.count(), 3);
 
   await originalHeader.click({ button: "right" });
@@ -623,13 +628,13 @@ try {
   const rateMode = rate.getByRole("combobox", { name: "Mode" });
   const rateTitle = rate.locator(".nd-node-title");
   const connections = await rate.locator(".nd-connected").count();
-  assert.equal(await rateMode.inputValue(), "slow");
+  assert.equal(await rateMode.getAttribute("data-value"), "slow");
   await hoverTooltip(rateMode, /^Slow\nSlow a pattern down/);
   await rateTitle.press("Enter");
   assert.equal(await currentReference.textContent(), "slow()");
   await referenceTab.locator(".ref-search").fill("no reference matches this");
-  await rateMode.selectOption("fast");
-  assert.equal(await rateMode.inputValue(), "fast");
+  await choose(rate, rateMode, "Fast");
+  assert.equal(await rateMode.getAttribute("data-value"), "fast");
   await hoverTooltip(rateMode, /^Fast\nSpeed a pattern up/);
   await hoverTooltip(rateTitle, /Signal Rate · Fast/);
   await rateTitle.press("Enter");
@@ -644,7 +649,7 @@ try {
   await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("Slow Signal");
   await page.getByRole("button", { name: "Signal Rate · Slow", exact: true }).click();
-  assert.equal(await page.locator('[data-kind="signalRate"]').last().getByRole("combobox", { name: "Mode" }).inputValue(), "slow");
+  assert.equal(await page.locator('[data-kind="signalRate"]').last().getByRole("combobox", { name: "Mode" }).getAttribute("data-value"), "slow");
 
   const handwriting = page.locator('[data-kind="fontHandwriting"]');
   await hoverTooltip(handwriting.locator(".nd-node-title"), /Bounce, Informality, and Spacing in Shantell Sans/);
@@ -655,11 +660,11 @@ try {
 
   const italic = page.locator('[data-kind="fontItalic"]');
   const italicMode = italic.getByRole("combobox", { name: "Mode" });
-  assert.equal(await italicMode.inputValue(), "blend");
+  assert.equal(await italicMode.getAttribute("data-value"), "blend");
   assert.equal(await italic.locator('.nd-connected [data-input="ital"]').count(), 1);
-  await italicMode.selectOption("toggle");
+  await choose(italic, italicMode, "On/Off");
   assert.equal(await italic.getByRole("checkbox", { name: "Italic" }).isChecked(), true);
-  await italicMode.selectOption("blend");
+  await choose(italic, italicMode, "Blend");
   assert.equal(await italic.locator('.nd-connected [data-input="ital"]').count(), 1);
 
   await page.getByRole("button", { name: "Add Node" }).click();
@@ -687,14 +692,14 @@ try {
   await page.getByRole("button", { name: "Variables", exact: true }).click();
   const variables = page.locator(".nd-variables");
   await variables.getByRole("textbox", { name: "Variable name" }).fill("Enabled");
-  await variables.getByRole("combobox", { name: "Variable type" }).selectOption("boolean");
+  await choose(variables, variables.getByRole("combobox", { name: "Variable type" }), "Boolean");
   await variables.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByRole("button", { name: "Add Node" }).click();
   const categoryColors = await page.locator(".nd-menu-category[data-category]").evaluateAll(headings =>
     headings.map(heading => getComputedStyle(heading).backgroundColor));
-  assert.equal(categoryColors.length, 7);
-  assert.equal(new Set(categoryColors).size, 7);
-  assert.equal(await page.locator(".nd-menu-icon").count(), 7);
+  assert.equal(categoryColors.length, 8);
+  assert.equal(new Set(categoryColors).size, 8);
+  assert.equal(await page.locator(".nd-menu-icon").count(), 8);
   assert.equal(await nodeResults.isVisible(), false);
   const signals = page.locator(".nd-menu-category[data-category=Signals]");
   const imageCategory = page.locator(".nd-menu-category[data-category=Image]");
@@ -734,6 +739,34 @@ try {
 
   await cableSearch.fill("brigthness");
   assert.equal(await nodeResults.getByRole("button").first().getAttribute("data-tooltip"), "Brightness");
+  await cableSearch.fill("multiply");
+  await nodeResults.getByRole("button", { name: "Multiply", exact: true }).waitFor();
+  await nodeResults.getByRole("button", { name: "Blend · Multiply", exact: true }).waitFor();
+  await cableSearch.fill("expression multiply");
+  await nodeResults.getByRole("button", { name: "Multiply", exact: true }).waitFor();
+  await page.locator(".nd-menu-category[data-category=Expressions]").click();
+  const expressionOptions = nodeResults.getByRole("button", { name: /^(Add|Subtract|Multiply|Divide|Remainder|Minimum|Maximum)$/ });
+  assert.deepEqual(await expressionOptions.allTextContents(), ["Add", "Subtract", "Multiply", "Divide", "Remainder", "Minimum", "Maximum"]);
+  await nodeResults.getByRole("button", { name: "Multiply", exact: true }).click();
+  const expression = page.locator('[data-kind="expression"]');
+  const expressionMode = expression.getByRole("combobox", { name: "Mode" });
+  assert.equal(await expressionMode.getAttribute("data-value"), "multiply");
+  await choose(expression, expressionMode, "Subtract");
+  assert.equal(await expressionMode.getAttribute("data-value"), "subtract");
+  await undo.click();
+  await undo.click();
+  await page.getByRole("button", { name: "Add Node" }).click();
+  await cableSearch.fill("modulo");
+  await nodeResults.getByRole("button", { name: "Remainder", exact: true }).waitFor();
+  await cableSearch.fill("float to boolean");
+  await nodeResults.getByRole("button", { name: "Conversion · Float to Boolean", exact: true }).waitFor();
+  await page.locator(".nd-menu-category[data-category=Expressions]").click();
+  await nodeResults.getByRole("button", { name: "Conversion", exact: true }).click();
+  const newConversion = page.locator('[data-kind="convert"]').last();
+  assert.equal(await newConversion.locator('.nd-port:not([data-input=""])').getAttribute("data-type"), null);
+  assert.equal(await newConversion.locator('[data-input=""]').getAttribute("data-type"), null);
+  await undo.click();
+  await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("missing-node-name");
   await nodeResults.getByText("No matching nodes").waitFor();
   await cableSearch.clear();
@@ -751,7 +784,7 @@ try {
   const variableTitle = variable.locator(".nd-node-title");
   assert.equal(await variableTitle.innerText(), "Get Variable");
   const variablePicker = variable.getByRole("combobox", { name: "Variable" });
-  assert.equal(await variablePicker.locator("option:checked").innerText(), "Enabled");
+  assert.equal(await variablePicker.innerText(), "Enabled");
   const variableInput = page.getByRole("button", { name: "Variable Set Value (boolean)", exact: true });
   const variableOutput = page.getByRole("button", { name: "Variable Get Value output (boolean)", exact: true });
   assert.equal(await variable.locator(".nd-port-row").filter({ has: variableInput }).innerText(), "Set Value");
@@ -769,13 +802,23 @@ try {
     const style = getComputedStyle(port);
     return [(port as HTMLElement).dataset.type, style.getPropertyValue("--nd-port-color").trim()];
   }));
-  for (const [type, color] of Object.entries({ visual: "#2ce8f5", textLayer: "#b55088", number: "#63c74d", text: "#ff67bb", boolean: "#ff0044" })) {
+  const palette = await page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement);
+    return Object.fromEntries(Object.entries({ visual: "visual", textLayer: "text", number: "number", text: "string", boolean: "boolean" })
+      .map(([type, token]) => [type, style.getPropertyValue(`--nd-color-${token}`).trim()]));
+  });
+  for (const [type, color] of Object.entries(palette)) {
+    assert(color);
     assert.deepEqual([...new Set(portColors.filter(([item]) => item === type).map(([, value]) => value))], [color]);
   }
   const numberWire = page.locator(".nd-wire-hit[data-type=number]").first();
   await numberWire.dispatchEvent("pointerdown", { button: 0 });
   const selectedWire = page.locator(".nd-wire-selected[data-type=number]:not(.nd-wire-hit)");
-  assert.equal(await selectedWire.evaluate(path => getComputedStyle(path).stroke), "rgb(99, 199, 77)");
+  assert.equal(await selectedWire.evaluate(path => getComputedStyle(path).stroke), await page.evaluate(color => {
+    const sample = document.createElement("span");
+    sample.style.color = color;
+    return sample.style.color;
+  }, palette.number));
 
   await page.evaluate(() => {
     const key = "nodesdevil-session-v1";
@@ -865,7 +908,7 @@ try {
     const graph = {
       nodes: [
         { id: "source", kind: "testCard", x: 40, y: 100, data: {} },
-        { id: "effect", kind: "brightness", x: 290, y: 100, data: {} },
+        { id: "effect", kind: "brightness", x: 205, y: 125, data: {} },
         { id: "output", kind: "output", x: 560, y: 100, data: {} },
         { id: "branch", kind: "output", x: 820, y: 100, data: {} },
       ],
@@ -902,7 +945,26 @@ try {
   assert.equal(await box.isVisible(), false);
   assert.deepEqual(await selectedIds(), ["source", "effect"]);
 
-  const sourceHeader = page.locator('[data-node-id="source"] header');
+  const sourceCard = page.locator('[data-node-id="source"]');
+  const sourceHeader = sourceCard.locator("header");
+  const effectHeader = page.locator('[data-node-id="effect"] header');
+  const beforeAlign = await positions();
+  const sourceWidth = await sourceCard.evaluate(card => (card as HTMLElement).offsetWidth);
+  const aligned = [[40, 100], [40 + sourceWidth + 24, 100], [560, 100], [820, 100]];
+  await sourceHeader.getByRole("button", { name: "Test Card reference" }).focus();
+  await page.keyboard.press("q");
+  assert.deepEqual(await positions(), aligned);
+  assert.equal((await center(sourceHeader)).y, (await center(effectHeader)).y);
+  assert.deepEqual(await selectedIds(), ["source", "effect"]);
+  assert.equal(await wires.count(), 2);
+  await page.keyboard.press("q");
+  await page.keyboard.press("Control+z");
+  assert.deepEqual(await positions(), beforeAlign);
+  await page.keyboard.press("Control+Shift+z");
+  assert.deepEqual(await positions(), aligned);
+  await page.keyboard.press("Control+z");
+  assert.deepEqual(await positions(), beforeAlign);
+
   const beforePan = await center(sourceHeader);
   await page.mouse.move(selectionViewport.x + 25, selectionViewport.y + 25);
   await page.mouse.down({ button: "middle" });
@@ -913,7 +975,7 @@ try {
   assert.deepEqual(await selectedIds(), ["source", "effect"]);
   const beforeMove = await positions();
   await drag(page, sourceHeader, { x: afterPan.x + 90, y: afterPan.y + 45 });
-  assert.deepEqual(await positions(), [[160, 160], [410, 160], [560, 100], [820, 100]]);
+  assert.deepEqual(await positions(), [[160, 160], [325, 185], [560, 100], [820, 100]]);
   assert.equal(await wires.count(), 2);
   await page.keyboard.press("Control+z");
   assert.deepEqual(await positions(), beforeMove);
@@ -962,8 +1024,8 @@ try {
   assert.equal(await rampCard.getByRole("combobox", { name: "Active color stop" }).count(), 0);
   assert.equal(await rampCard.getByRole("spinbutton", { name: "Position" }).count(), 0);
   const rampInterpolation = rampCard.getByRole("combobox", { name: "Gradient interpolation" });
-  assert.deepEqual(await rampInterpolation.locator("option").allTextContents(), ["Linear", "Constant"]);
-  assert.equal(await rampInterpolation.inputValue(), "Linear");
+  assert.deepEqual(await rampCard.locator('[role="option"]').allTextContents(), ["Linear", "Constant"]);
+  assert.equal(await rampInterpolation.getAttribute("data-value"), "Linear");
 
   await rampCard.getByRole("button", { name: "Add color stop" }).click();
   assert.equal(await colorPorts.count(), 3);
@@ -976,8 +1038,12 @@ try {
   await rampHex.fill("#00ff0080");
   await rampHex.press("Enter");
   await page.keyboard.press("Escape");
-  await rampCard.getByRole("combobox", { name: "Gradient interpolation" }).selectOption("Constant");
+  await choose(rampCard, rampInterpolation, "Constant");
   const strip = rampCard.locator(".nd-gradient-track canvas");
+  await rampInterpolation.click();
+  await rampCard.getByRole("option", { name: "Linear", exact: true }).hover();
+  assert.notDeepEqual(await pixel(strip, 0.75, 0), [0, 255, 0, 128]);
+  await rampInterpolation.press("Escape");
   assert.deepEqual(await pixel(strip, 0.75, 0), [0, 255, 0, 128]);
   await drag(page, sourceColor.locator('.nd-port[data-input=""]'), middlePort);
   assert.equal(await wires.filter({ visible: true }).count(), 2);
@@ -1012,7 +1078,7 @@ try {
   assert.equal(await wires.filter({ visible: true }).count(), 2);
   await page.reload();
   assert.equal(await colorPorts.nth(2).getAttribute("data-input"), added);
-  assert.equal(await rampCard.getByRole("combobox", { name: "Gradient interpolation" }).inputValue(), "Constant");
+  assert.equal(await rampInterpolation.getAttribute("data-value"), "Constant");
   assert.equal(await wires.filter({ visible: true }).count(), 2);
   await stopHandle.focus();
   await rampCard.getByRole("button", { name: "Remove color stop" }).click();
@@ -1063,42 +1129,246 @@ try {
   assert.equal(await page.locator('.nd-wire-hit[data-type="color"]').count(), 1);
   assert.equal(await colorSwatch.count(), 0);
 
-  await page.evaluate(() => {
-    const key = "nodesdevil-session-v1";
-    const session = JSON.parse(localStorage.getItem(key)!);
+  const fitFixture = await page.evaluate(mediaUrl => {
+    const session = JSON.parse(localStorage.getItem("nodesdevil-session-v1")!);
+    const media = { id: "fit-blue-image", name: "fit-blue-image", url: mediaUrl, type: "image" };
     const graph = {
       nodes: [
         { id: "string", kind: "constant", x: 50, y: 200, data: { mode: "text", value: "add" } },
         { id: "overlay", kind: "testCard", x: 50, y: 390, data: {} },
         { id: "blend", kind: "blend", x: 320, y: 130, data: { mode: "screen multiply" } },
         { id: "fit", kind: "fit", x: 320, y: 330, data: {} },
+        { id: "fit-media", kind: "media", x: 50, y: 610, data: { media: media.id } },
       ],
-      edges: [],
+      edges: [{ from: "fit-media", to: "fit", input: "image" }],
       variables: [],
     };
-    localStorage.setItem(key, JSON.stringify({ ...session, draft: graph, view: { x: 0, y: 0, zoom: 1, previews: [] } }));
-  });
+    return JSON.stringify({ ...session, media: [...session.media, media], draft: graph, view: { x: 0, y: 0, zoom: 1, previews: ["fit"] } });
+  }, url + "/test-assets/blue.png");
+  // Seed on the next document so a late media update cannot overwrite the fixture during reload.
+  await page.addInitScript(fixture => {
+    if (sessionStorage.getItem("fit-test-seeded")) return;
+    sessionStorage.setItem("fit-test-seeded", "true");
+    localStorage.setItem("nodesdevil-session-v1", fixture);
+  }, fitFixture);
   await page.reload();
   const blendCard = page.locator('[data-kind="blend"]');
   const blendMode = blendCard.getByRole("combobox", { name: "Mode", exact: true });
   const blendModePort = blendCard.locator('[data-input="mode"]');
   const overlayPort = blendCard.locator('[data-input="second"]');
-  const fitMode = page.locator('[data-kind="fit"]').getByRole("combobox", { name: "Mode", exact: true });
-  assert.equal(await blendMode.inputValue(), "screen multiply");
-  assert.equal(await fitMode.inputValue(), "cover");
-  await blendMode.selectOption("multiply");
-  await fitMode.selectOption("tilecenter");
+  const fitCard = page.locator('[data-kind="fit"]');
+  const fitMode = fitCard.getByRole("combobox", { name: "Mode", exact: true });
+  const fitModePort = fitCard.locator('[data-input="mode"]');
+  const fitPreview = fitCard.locator(".nd-thumbnail");
+  const bluePixel = (rgba: number[]) => rgba[2] > 200 && rgba[3] === 255;
+  const blankPixel = (rgba: number[]) => rgba[2] < 25;
+  const savedSession = () => page.evaluate(() => localStorage.getItem("nodesdevil-session-v1"));
+  assert.equal(await blendMode.getAttribute("data-value"), "screen multiply");
+  assert.equal(await fitMode.getAttribute("data-value"), "cover");
+  await waitPixel(fitPreview, bluePixel);
+  await page.mouse.move(0, 0);
+  const triggerStyles = await fitMode.evaluate(trigger => {
+    const field = document.createElement("input");
+    field.className = "nd-field";
+    trigger.closest(".nd-node-body")!.append(field);
+    const triggerStyle = getComputedStyle(trigger);
+    const fieldStyle = getComputedStyle(field);
+    const properties = ["backgroundColor", "borderTopColor", "color", "fontSize", "fontWeight"] as const;
+    const styles = properties.map(property => [triggerStyle[property], fieldStyle[property]]);
+    field.remove();
+    return styles;
+  });
+  for (const [actual, expected] of triggerStyles) assert.equal(actual, expected);
+  const beforeHover = await savedSession();
+  await fitMode.click();
+  const modeColor = await fitModePort.evaluate(port => getComputedStyle(port).backgroundColor);
+  const check = fitCard.getByRole("option", { name: "cover", exact: true }).locator(".ph-check");
+  assert.equal(await check.evaluate(icon => getComputedStyle(icon).color), modeColor);
+  const contain = fitCard.getByRole("option", { name: "contain", exact: true });
+  await contain.hover();
+  assert.equal(await contain.evaluate(row => getComputedStyle(row).backgroundColor), modeColor);
+  await waitPixel(fitPreview, blankPixel);
+  await fitCard.getByRole("option", { name: "fill", exact: true }).hover();
+  await waitPixel(fitPreview, bluePixel);
+  await fitCard.getByRole("option", { name: "none", exact: true }).hover();
+  await waitPixel(fitPreview, blankPixel);
+  assert.equal(await savedSession(), beforeHover);
+  assert.equal(await fitMode.getAttribute("data-value"), "cover");
+  await fitPreview.hover();
+  await waitPixel(fitPreview, bluePixel);
+  await fitMode.press("ArrowDown");
+  await waitPixel(fitPreview, blankPixel);
+  await fitMode.press("Escape");
+  await waitPixel(fitPreview, bluePixel);
+  assert.equal(await savedSession(), beforeHover);
+  await choose(fitCard, fitMode, "tilecenter");
+  assert.equal(await fitMode.getAttribute("data-value"), "tilecenter");
+  await undo.click();
+  assert.equal(await fitMode.getAttribute("data-value"), "cover");
+  await page.getByRole("button", { name: "Redo", exact: true }).click();
+  assert.equal(await fitMode.getAttribute("data-value"), "tilecenter");
+  await choose(blendCard, blendMode, "multiply");
   await drag(page, page.locator('[data-node-id="overlay"] .nd-port-out .nd-port'), overlayPort);
   assert.equal(await blendCard.locator('.nd-connected [data-input="second"]').count(), 1);
   await drag(page, page.locator('[data-node-id="string"] .nd-port-out .nd-port'), blendModePort);
   assert.equal(await blendMode.count(), 0);
   assert.equal(await page.locator('.nd-wire-hit[data-type="text"]').count(), 1);
   await page.reload();
-  assert.equal(await fitMode.inputValue(), "tilecenter");
+  assert.equal(await fitMode.getAttribute("data-value"), "tilecenter");
   assert.equal(await blendMode.count(), 0);
   assert.equal(await blendCard.locator('.nd-connected [data-input="second"]').count(), 1);
   await blendModePort.click({ button: "right" });
-  assert.equal(await blendMode.inputValue(), "multiply");
+  assert.equal(await blendMode.getAttribute("data-value"), "multiply");
+
+  await page.evaluate(() => {
+    const key = "nodesdevil-session-v1";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const draft = {
+      nodes: [
+        { id: "feed", kind: "testCard", x: 60, y: 100, data: {} },
+        { id: "out-a", kind: "output", x: 650, y: 100, data: {} },
+        { id: "out-b", kind: "output", x: 650, y: 360, data: {} },
+      ],
+      edges: [{ from: "feed", to: "out-a", input: "image" }],
+      variables: [],
+    };
+    localStorage.setItem(key, JSON.stringify({ ...session, draft, view: { x: 0, y: 0, zoom: 1, previews: [] } }));
+  });
+  await page.reload();
+  await page.waitForFunction(() => {
+    const wire = document.querySelector(".nd-wire-hit");
+    return wire && getComputedStyle(wire).pointerEvents === "stroke";
+  });
+  const wireMiddle = await wires.first().evaluate(wire => {
+    const path = wire as SVGPathElement;
+    const { x, y } = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM()!);
+    return { x, y };
+  });
+  await page.mouse.dblclick(wireMiddle.x, wireMiddle.y);
+  const junction = page.locator('[data-kind="junction"]');
+  const junctionHandle = junction.getByRole("button", { name: "Junction", exact: true });
+  assert.equal(await junction.count(), 1);
+  assert.equal(await wires.count(), 2);
+  const outA = page.locator('[data-node-id="out-a"] [data-input="image"]');
+  const outB = page.locator('[data-node-id="out-b"] [data-input="image"]');
+  const feed = page.locator('[data-node-id="feed"] [data-input=""]');
+  await drag(page, junction.locator('[data-input=""]'), outB);
+  assert.equal(await wires.count(), 3);
+  const movedJunction = { x: wireMiddle.x + 35, y: wireMiddle.y + 46 };
+  await drag(page, junctionHandle, movedJunction);
+  assert(Math.abs((await center(junctionHandle)).y - movedJunction.y) < 2);
+  await run.click();
+  assert.equal(await page.locator(".nd-status").textContent(), "Running");
+
+  const looseInputs = page.getByRole("button", { name: "Loose input end", exact: true });
+  const looseOutputs = page.getByRole("button", { name: "Loose output end", exact: true });
+  for (const action of ["menu", "keyboard"]) {
+    if (action === "menu") {
+      await junctionHandle.click({ button: "right" });
+      await page.getByRole("button", { name: "Delete junction", exact: true }).click();
+    } else {
+      await junctionHandle.click();
+      await page.keyboard.press("Delete");
+    }
+    assert.equal(await junction.count(), 0);
+    assert.equal(await wires.count(), 0);
+    assert.equal(await looseInputs.count() + await looseOutputs.count(), 0);
+    assert.equal(await feed.count() + await outA.count() + await outB.count(), 3);
+    await undo.click();
+    assert.equal(await junction.count(), 1);
+    assert.equal(await wires.count(), 3);
+  }
+
+  await junctionHandle.click({ button: "right" });
+  await page.getByRole("button", { name: "Delete junction and keep cable ends", exact: true }).click();
+  assert.equal(await junction.count(), 0);
+  assert.equal(await wires.count(), 3);
+  assert.equal(await looseInputs.count(), 1);
+  assert.equal(await looseOutputs.count(), 2);
+  assert.equal(await page.locator('[data-kind="output"] .nd-connected').count(), 0);
+  await undo.click();
+  assert.equal(await junction.count(), 1);
+  await page.getByRole("button", { name: "Redo", exact: true }).click();
+  assert.equal(await junction.count(), 0);
+  const originalEnd = await center(looseOutputs.first());
+  const otherEnd = await center(looseOutputs.last());
+  const movedEnd = { x: originalEnd.x + 70, y: originalEnd.y + 60 };
+  await drag(page, looseOutputs.first(), movedEnd);
+  assert(Math.abs((await center(looseOutputs.first())).y - movedEnd.y) < 2);
+  assert.deepEqual(await center(looseOutputs.last()), otherEnd);
+  await page.reload();
+  await looseOutputs.first().waitFor();
+  assert.equal(await wires.count(), 3);
+  assert(Math.abs((await center(looseOutputs.first())).y - movedEnd.y) < 2);
+  await drag(page, looseInputs, outA);
+  assert.equal(await looseInputs.count(), 0);
+  assert.equal(await looseOutputs.count(), 1);
+  await drag(page, looseOutputs, feed);
+  assert.equal(await looseOutputs.count(), 0);
+  assert.equal(await wires.count(), 2);
+  await run.click();
+  assert.equal(await page.locator(".nd-status").textContent(), "Running");
+
+  await page.evaluate(() => {
+    const key = "nodesdevil-session-v1";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const draft = {
+      nodes: [
+        { id: "mask-ramp", kind: "colorRamp", x: 40, y: 255, data: {} },
+        { id: "mask-fill", kind: "color", x: 40, y: 75, data: { color: { hex: "#ff0000", alpha: 1 } } },
+        { id: "mask-opacity", kind: "alpha", x: 630, y: 220, data: {} },
+        { id: "mask-output", kind: "output", x: 980, y: 220, data: {} },
+        { id: "mask-flag", kind: "variable", x: 950, y: 340, data: { variable: "mask-flag" } },
+      ],
+      edges: [
+        { from: "mask-fill", to: "mask-opacity", input: "image" },
+        { from: "mask-opacity", to: "mask-output", input: "image" },
+      ],
+      variables: [{ id: "mask-flag", name: "Mask Flag", type: "boolean" }],
+    };
+    localStorage.setItem(key, JSON.stringify({ ...session, draft, view: { x: 0, y: 0, zoom: 1, previews: ["mask-opacity"] } }));
+  });
+  await page.reload();
+  const maskImage = page.locator('[data-node-id="mask-ramp"] .nd-port-out .nd-port').first();
+  const maskedOpacity = page.locator('[data-node-id="mask-opacity"]');
+  const maskAmount = maskedOpacity.locator('[data-input="value"]');
+  await drag(page, maskImage, maskAmount);
+  const hasImageConversion = async () => {
+    const { draft } = JSON.parse((await savedSession())!);
+    return draft.nodes.some((node: { kind: string; data: { mode?: string; automatic?: boolean } }) =>
+      node.kind === "convert" && node.data.mode === "imageToFloat" && node.data.automatic);
+  };
+  assert(await hasImageConversion());
+  await run.click();
+  assert.equal(await page.locator(".nd-status").textContent(), "Running");
+  const maskedPreview = maskedOpacity.locator(".nd-thumbnail");
+  await waitPixel(maskedPreview, ([, , , a]) => a >= 4 && a <= 15);
+  assert((await pixel(maskedPreview, 0.1, 0.5))[3] < 40);
+  assert((await pixel(maskedPreview, 0.9, 0.5))[3] > 215);
+  await page.reload();
+  assert(await hasImageConversion());
+  const imageConversion = page.locator('[data-kind="convert"]');
+  const conversionId = await imageConversion.getAttribute("data-node-id");
+  const conversionOutput = imageConversion.locator('[data-input=""]');
+  await conversionOutput.click({ modifiers: ["Alt"] });
+  assert.equal(await imageConversion.getAttribute("data-node-id"), conversionId);
+  assert.equal(await imageConversion.locator('[data-input="image"]').getAttribute("data-type"), "visual");
+  assert.equal(await conversionOutput.getAttribute("data-type"), null);
+  await page.reload();
+  assert.equal(await conversionOutput.getAttribute("data-type"), null);
+  await drag(page, conversionOutput, page.locator('[data-node-id="mask-flag"] [data-input="value"]'));
+  assert.equal(await imageConversion.getAttribute("data-node-id"), conversionId);
+  assert.equal(await conversionOutput.getAttribute("data-type"), "boolean");
+  const conversionInput = imageConversion.locator('.nd-port:not([data-input=""])');
+  await conversionInput.click({ modifiers: ["Alt"] });
+  assert.equal(await conversionInput.getAttribute("data-type"), null);
+  assert.equal(await conversionOutput.getAttribute("data-type"), "boolean");
+  await page.reload();
+  assert.equal(await conversionInput.getAttribute("data-type"), null);
+  await drag(page, page.locator('[data-node-id="mask-ramp"] [data-output="mask"]'), conversionInput);
+  assert.equal(await imageConversion.getAttribute("data-node-id"), conversionId);
+  assert.equal(await conversionInput.getAttribute("data-type"), "number");
+  assert.equal(await conversionOutput.getAttribute("data-type"), "boolean");
 
   assert.deepEqual(errors, []);
   console.log("NodesDevil browser check passed: box selection, two-column node menu and search, numeric input and cable gestures, font controls, media drag, previews, projection, persistence, examples, palette, Color Ramp, Color pickers, and mode dropdowns.");
