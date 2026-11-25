@@ -30,12 +30,12 @@ function saveState(updates: Partial<{ open: boolean; tab: string; width: number 
  * The default active tab (About) lives in index.html, overridden by a stored
  * `tab` in setupSidebar.
  */
-export function resolveSidebarOpen(raw: string | null): boolean {
-  if (raw === null) return true;
-  try { return JSON.parse(raw).open ?? true; } catch { return true; }
+export function resolveSidebarOpen(raw: string | null, defaultOpen = true): boolean {
+  if (raw === null) return defaultOpen;
+  try { return JSON.parse(raw).open ?? defaultOpen; } catch { return defaultOpen; }
 }
 
-export function setupSidebar(isFreshSession = false) {
+export function setupSidebar(isFreshSession = false, defaultOpen = true) {
   const toggle = document.getElementById("sidebar-toggle")!;
   const panel = document.getElementById("sidebar-panel")!;
   const handle = panel.querySelector<HTMLElement>(".resize-handle")!;
@@ -45,7 +45,7 @@ export function setupSidebar(isFreshSession = false) {
   // flashes before JS runs); open it here for a first visit / untouched reload.
   // Suppress the transition for this initial set so it snaps to its resting state
   // instead of sliding on load — re-enabled below so later user toggles animate.
-  const open = resolveSidebarOpen(localStorage.getItem(STORAGE_KEY));
+  const open = resolveSidebarOpen(localStorage.getItem(STORAGE_KEY), defaultOpen);
   panel.style.transition = "none";
   panel.classList.toggle("open", open);
   toggle.classList.toggle("open", open);

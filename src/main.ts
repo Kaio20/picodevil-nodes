@@ -8,8 +8,7 @@ import { resolveMedia, addMedia, clearAll as clearMediaRegistry, setDurationByUr
 import { resolveUrl, probeHealth, shouldAutoProbeOnStartup } from "./server-config";
 import { initRegistry as initPatternRegistry, each, all } from "./pattern-registry";
 import { loadFromUrl, saveToUrl, setUrlWarnCallback, hashLooksCorrupt } from "./url-state";
-import { defaultCode } from "./editor";
-import { pickAutostartCode } from "./examples";
+import { blockStarter, setupBlockEditor } from "./block-editor";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { slider as sliderWidget, fontPicker as fontPickerWidget } from "./widgets";
 import { initFontList } from "./font-list";
@@ -24,6 +23,7 @@ import { showFatalOverlay, rendererFailureMessage } from "./fatal-overlay";
 import { FrameRenderer } from "./renderer";
 import type { Renderer } from "./renderer-interface";
 import { EvalController } from "./eval-controller";
+import { Projection } from "./projection";
 
 import { Pattern, useRNG } from "@strudel/core";
 useRNG('precise');
@@ -57,10 +57,18 @@ try {
   throw err;
 }
 
+const projection = new Projection(() => { resize(); scheduleFrame(); });
+
 function resize() {
-  canvas.width = window.innerWidth * devicePixelRatio;
-  canvas.height = window.innerHeight * devicePixelRatio;
-  activeRenderer.resize(canvas.width, canvas.height);
+  const output = projection.outputWindow;
+  const bounds = canvas.getBoundingClientRect();
+  const density = output?.devicePixelRatio ?? devicePixelRatio;
+  const width = Math.max(1, Math.round((output?.innerWidth ?? bounds.width) * density));
+  const height = Math.max(1, Math.round((output?.innerHeight ?? bounds.height) * density));
+  if (canvas.width === width && canvas.height === height) return;
+  canvas.width = width;
+  canvas.height = height;
+  activeRenderer.resize(width, height);
 }
 window.addEventListener("resize", resize);
 resize();
@@ -169,15 +177,28 @@ window.pdEval = (code) => evalController.eval(code);
 // --- render loop ---
 let lastRafAbsTime = performance.now();
 let rafPaused = false;
+let scheduled: { host: Window; id: number } | undefined;
+
+function scheduleFrame() {
+  const output = projection.outputWindow;
+  const host = output && !output.document.hidden ? output : window;
+  if (scheduled?.host === host) return;
+  if (scheduled) scheduled.host.cancelAnimationFrame(scheduled.id);
+  scheduled = { host, id: host.requestAnimationFrame(() => {
+    scheduled = undefined;
+    frame();
+  }) };
+}
 
 // Expose active video elements for testing/debugging
 (window as any)._pdActiveVideoEls = frameRenderer.activeVideoEls;
 
 function frame() {
-  if (rafPaused) { requestAnimationFrame(frame); return; }
+  scheduleFrame();
+  if (rafPaused) return;
   // Skip rendering while the GPU context is lost — issuing GL calls into a dead
   // context spews errors and can starve the browser's chance to restore it.
-  if (activeRenderer.isContextLost?.()) { requestAnimationFrame(frame); return; }
+  if (activeRenderer.isContextLost?.()) return;
   const rafAbsNow = performance.now();
   const interFrameGap = rafAbsNow - lastRafAbsTime;
   lastRafAbsTime = rafAbsNow;
@@ -187,6 +208,7 @@ function frame() {
   fftUpdateFrame();
 
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, rafAbsNow);
+  projection.present(canvas);
 
   // Test hook: expose the live loop's current frame coordinates so a capture
   // harness can phase-sample the running render (re-render the exact live cycle
@@ -203,9 +225,8 @@ function frame() {
   );
 
   flushWarnings();
-  requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+scheduleFrame();
 
 // Test-only deterministic-render hooks. Used by golden-render harness and
 // future visual regression tests. pdRenderAt synchronously renders one frame
@@ -222,10 +243,11 @@ requestAnimationFrame(frame);
   setRuntimeCps(cps);
   const wall = wallMs ?? performance.now();
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, wall);
+  projection.present(canvas);
 };
 
 // --- URL state ---
-let currentCode = defaultCode;
+let currentCode = blockStarter;
 export function getCurrentCode(): string { return currentCode; }
 
 const urlState = loadFromUrl();
@@ -239,12 +261,6 @@ if (urlState) {
   initRegistry(urlState.media);
   currentCode = urlState.code;
   if (urlState.fft) applyFftConfig(urlState.fft);
-} else {
-  // Fresh session: greet the visitor with a random autostart-eligible example,
-  // paired with the CDN defaults the media loader auto-pulls. Flashing examples
-  // are excluded via `autostart: false`. Source names resolve at query time, so
-  // it renders once the async defaults land — no re-eval needed.
-  currentCode = pickAutostartCode() || defaultCode;
 }
 
 setUrlWarnCallback((msg) => { if (msg) warn(msg); });
@@ -253,7 +269,7 @@ addOnChange(saveUrl);
 onFftConfigChange(saveUrl);
 
 // --- editor ---
-setupEditor(
+const editor = setupEditor(
   document.getElementById("editor-wrap")!,
   currentCode,
   (code) => {
@@ -261,6 +277,79 @@ setupEditor(
     saveUrl();
   },
 );
+
+const blockHost = document.getElementById("bd-editor")!;
+const codeHost = document.getElementById("editor-wrap")!;
+const codeStatus = document.getElementById("bd-code-status")!;
+const blocksButton = document.getElementById("bd-show-blocks")!;
+const codeButton = document.getElementById("bd-show-code")!;
+const setCode = window.pdSetCode;
+let mode: "blocks" | "code" = "code";
+let blockSource: string | undefined;
+
+const blockEditor = setupBlockEditor(blockHost, {
+  run(code) {
+    const error = setCode(code, true) ?? null;
+    if (!error) blockSource = code;
+    return error;
+  },
+  openExample(code) {
+    const error = blockEditor.load(code);
+    if (error) { blockEditor.setStatus(error, true); return; }
+    cpsController.reset(performance.now());
+    blockEditor.run();
+  },
+});
+
+function showMode(next: typeof mode, message = "") {
+  mode = next;
+  const blocks = next === "blocks";
+  codeHost.hidden = blocks;
+  blockHost.hidden = !blocks;
+  document.body.classList.toggle("bd-blocks", blocks);
+  blocksButton.setAttribute("aria-pressed", String(blocks));
+  codeButton.setAttribute("aria-pressed", String(!blocks));
+  codeStatus.textContent = message;
+  codeStatus.hidden = !message;
+  if (blocks) blockEditor.layout();
+  resize();
+}
+
+function showBlocks(code: string) {
+  if (code !== blockSource) {
+    const error = blockEditor.load(code);
+    if (error) {
+      showMode("code", `Opened in Code. ${error}`);
+      return;
+    }
+    blockSource = code;
+  }
+  showMode("blocks");
+}
+
+blocksButton.addEventListener("click", () => showBlocks(editor.state.doc.toString()));
+codeButton.addEventListener("click", () => {
+  if (mode === "code") return;
+  try {
+    const code = blockEditor.getCode();
+    setCode(code, false);
+    blockSource = code;
+    showMode("code");
+  } catch {
+    showMode("code", "Showing the last complete patch. The unfinished blocks are still in Blocks.");
+  }
+  editor.focus();
+});
+
+window.pdSetCode = (code, evaluate) => {
+  const error = setCode(code, evaluate);
+  if (mode === "blocks") showBlocks(editor.state.doc.toString());
+  return error;
+};
+
+projection.bindToggle(document.querySelector<HTMLButtonElement>("#bd-projection-toggle")!);
+document.getElementById("bd-open-output")!.addEventListener("click", () => projection.open());
+showBlocks(currentCode);
 // A fresh session = no saved URL state. Tells the media loader to auto-pull the
 // curated CDN defaults so a first-time visitor lands with media ready.
-setupSidebar(!urlState);
+setupSidebar(!urlState, !document.body.classList.contains("bd-blocks"));

@@ -48,6 +48,19 @@
 <body>
   <canvas id="c"></canvas>
   <div id="editor-wrap"></div>
+  <nav id="bd-toolbar" aria-label="Editor controls">
+    <strong class="bd-brand">picodevil</strong>
+    <div class="bd-mode-switch" aria-label="Editor mode">
+      <button id="bd-show-blocks" type="button" aria-pressed="false">Blocks</button>
+      <button id="bd-show-code" type="button" aria-pressed="true">Code</button>
+    </div>
+    <div class="bd-output-actions">
+      <button id="bd-projection-toggle" type="button">Projection</button>
+      <button id="bd-open-output" type="button">Open Output</button>
+    </div>
+  </nav>
+  <section id="bd-editor" aria-label="Blockly editor" hidden></section>
+  <p id="bd-code-status" role="status" hidden></p>
   <button id="sidebar-toggle">‹</button>
   <div id="sidebar-panel">
     <div class="resize-handle"></div>

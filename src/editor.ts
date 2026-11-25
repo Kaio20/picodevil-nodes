@@ -92,7 +92,7 @@ import { createPlayButton, type PlayButton } from "./play-button";
 declare global {
   interface Window {
     pdEval: (code: string) => { error: string | null; widgets: WidgetCallInfo[] };
-    pdSetCode: (code: string, evaluate?: boolean) => void;
+    pdSetCode: (code: string, evaluate?: boolean) => string | null | undefined;
     pdInsertAtCursor: (text: string) => void;
   }
 }
@@ -281,7 +281,7 @@ export function setupEditor(
     if (noArgPickers.length === 0) {
       editorView.dispatch({ effects: setWidgetMeta.of(result.widgets) });
       markEvaluated(editorView);
-      return;
+      return result.error;
     }
 
     // Insert the default font name string into source for each no-arg fontPicker().
@@ -311,6 +311,7 @@ export function setupEditor(
     });
     onCodeChange?.(editorView.state.doc.toString());
     markEvaluated(editorView);
+    return result.error;
   }
 
   const runEval = (view: EditorView) => {
@@ -369,12 +370,12 @@ export function setupEditor(
   playButton = createPlayButton(document.body, () => runEval(view));
 
   window.pdSetCode = (code: string, evaluate = false) => {
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: code },
-    });
+    if (code !== view.state.doc.toString()) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: code } });
+    }
     if (evaluate) {
       onCodeChange?.(code);
-      evalAndDecorate(view, code);
+      return evalAndDecorate(view, code);
     }
   };
 
