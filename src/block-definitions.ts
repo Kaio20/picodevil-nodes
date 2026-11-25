@@ -2,29 +2,29 @@ import * as Blockly from "blockly";
 import { effects, signalMethods, signals, sources } from "./block-code";
 import { trackPointerDrag } from "./number-drag";
 
-const palette = {
+export const blockPalette = {
   Sources: "#5ba8ff", Signals: "#20b562", Expressions: "#beeb71", Playback: "#f68f37",
   Layout: "#ffe737", Image: "#25e2cd", Text: "#a675fe", Variables: "#ff82ce", Output: "#e03c28",
 };
-type Category = keyof typeof palette;
+type Category = keyof typeof blockPalette;
 
-function darken(color: string, amount: number): string {
-  const channels = color.slice(1).match(/../g)!;
-  return `#${channels.map(channel => Math.round(Number.parseInt(channel, 16) * amount).toString(16).padStart(2, "0")).join("")}`;
+function tint(color: string, amount: number): string {
+  return `#${color.slice(1).match(/../g)!.map((channel, index) => {
+    const base = [24, 25, 27][index];
+    return Math.round(base + (Number.parseInt(channel, 16) - base) * amount).toString(16).padStart(2, "0");
+  }).join("")}`;
 }
 
 export const blockTheme = Blockly.Theme.defineTheme("picodevil", {
   name: "picodevil",
-  blockStyles: Object.fromEntries(Object.entries(palette).map(([name, color]) => [name, {
-    colourPrimary: color, colourSecondary: darken(color, 0.84), colourTertiary: darken(color, 0.67),
+  blockStyles: Object.fromEntries(Object.entries(blockPalette).map(([name, color]) => [name, {
+    colourPrimary: tint(color, 0.085), colourSecondary: tint(color, 0.17), colourTertiary: tint(color, 0.4),
   }])),
-  categoryStyles: Object.fromEntries(Object.entries(palette).map(([name, color]) => [name, { colour: color }])),
   componentStyles: {
-    workspaceBackgroundColour: "#161719", toolboxBackgroundColour: "#202124", toolboxForegroundColour: "#dddfe2",
-    flyoutBackgroundColour: "#26272a", flyoutForegroundColour: "#eeeef0", flyoutOpacity: 1,
+    workspaceBackgroundColour: "#191a1c",
     scrollbarColour: "#8a8a8f", scrollbarOpacity: 0.4, insertionMarkerColour: "#ffffff", insertionMarkerOpacity: 0.33,
   },
-  fontStyle: { family: '"IBM Plex Mono", monospace', size: 12 },
+  fontStyle: { family: '"IBM Plex Mono", monospace', size: 11, weight: "normal" },
 });
 
 class ScrubNumber extends Blockly.FieldNumber {
@@ -113,7 +113,7 @@ const baseBlocks = [
   { type: "pd_mini_pause", message0: "Rest", output: rhythmOutputs, style: "Expressions" },
   {
     type: "pd_mini_join", message0: "%1 %2 %3", args0: [dropdown("MODE", [["Sequence", "sequence"], ["Parallel", "parallel"]]), value("LEFT", "Mini"), value("RIGHT", "Mini")],
-    output: rhythmOutputs, style: "Expressions", inputsInline: false,
+    output: rhythmOutputs, style: "Expressions", inputsInline: true,
   },
   {
     type: "pd_mini_group", message0: "%1 %2", args0: [dropdown("MODE", [["Group", "group"], ["Alternate", "alternate"]]), value("PATTERN", "Mini")],
@@ -160,27 +160,37 @@ Blockly.Blocks.pd_mini_repeat = {
   },
 };
 
-type ToolboxItem = Blockly.utils.toolbox.BlockInfo;
-const entry = (type: string, inputs?: ToolboxItem["inputs"]): ToolboxItem => ({ kind: "block", type, ...(inputs && { inputs }) });
+type BlockState = Blockly.serialization.blocks.State;
+export interface BlockChoice {
+  name: string;
+  category: Category;
+  state: BlockState;
+  aliases?: string[];
+}
+
+const entry = (category: Category, name: string, type: string, inputs?: BlockState["inputs"]): BlockChoice => ({ category, name, state: { type, inputs } });
 const number = (amount: number) => ({ shadow: { type: "pd_number", fields: { VALUE: amount } } });
 const mini = (pattern: string) => ({ shadow: { type: "pd_mini_text", fields: { VALUE: pattern } } });
-const category = (name: Category, contents: ToolboxItem[]) => ({ kind: "category", name, categorystyle: name, contents } as const);
 
-export const blockToolbox = {
-  kind: "categoryToolbox" as const,
-  contents: [
-    category("Output", [entry("pd_layer")]),
-    category("Sources", [entry("pd_source", { VALUE: mini("#5ba8ff #a675fe") }), entry("pd_pattern")]),
-    ...(["Playback", "Layout", "Image"] as const).map(group => category(group, [
-      ...(group === "Playback" ? [entry("pd_tempo", { VALUE: number(30) }), entry("pd_transform")] : []),
-      ...effects.filter(effect => effect.category === group).map(effect => {
-        const defaults: Record<string, string> = { objectfit: "cover", blend: "normal" };
-        const args = Object.fromEntries(effect.args.flatMap((arg, index) => arg === "Value" ? [[`ARG${index}`, defaults[effect.id] ? mini(defaults[effect.id]) : number(1)]] : []));
-        return entry(`pd_fx_${effect.id}`, args);
-      }),
-    ])),
-    category("Expressions", [entry("pd_number"), ...["text", "atom", "pause", "join", "group", "repeat"].map(kind => entry(`pd_mini_${kind}`))]),
-    category("Signals", [entry("pd_signal"), entry("pd_signal_rate"), entry("pd_signal_range")]),
-    category("Text", [entry("pd_text")]),
-  ],
-};
+const sourceValues = { s: "ducks", color: "#5ba8ff #a675fe", video: "ducks", image: "testcard", text: "Hello" };
+const effectDefaults: Record<string, string> = { objectfit: "cover", blend: "normal" };
+const rhythmNames = [["text", "Mini text"], ["atom", "Step"], ["pause", "Rest"], ["join", "Sequence / parallel"], ["group", "Group / alternate"], ["repeat", "Repeat"]];
+
+export const blockCatalog: BlockChoice[] = [
+  entry("Output", "Output layer", "pd_layer"),
+  ...sources.map(([name, id]): BlockChoice => ({
+    name, category: "Sources", aliases: [id],
+    state: { type: "pd_source", fields: { SOURCE: id }, inputs: { VALUE: mini(sourceValues[id]) } },
+  })),
+  entry("Sources", "Pattern", "pd_pattern"),
+  entry("Playback", "Tempo", "pd_tempo", { VALUE: number(30) }),
+  entry("Playback", "Transform", "pd_transform"),
+  ...effects.map(effect => {
+    const args = Object.fromEntries(effect.args.flatMap((arg, index) => arg === "Value" ? [[`ARG${index}`, effectDefaults[effect.id] ? mini(effectDefaults[effect.id]) : number(1)]] : []));
+    return { ...entry(effect.category, effect.label, `pd_fx_${effect.id}`, args), aliases: [effect.method] };
+  }),
+  entry("Expressions", "Number", "pd_number"),
+  ...rhythmNames.map(([type, name]) => entry("Expressions", name, `pd_mini_${type}`)),
+  entry("Signals", "Signal", "pd_signal"), entry("Signals", "Signal rate", "pd_signal_rate"), entry("Signals", "Signal range", "pd_signal_range"),
+  entry("Text", "Text literal", "pd_text"),
+];

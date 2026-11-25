@@ -1,5 +1,7 @@
 import * as Blockly from "blockly";
-import { blockTheme, blockToolbox } from "./block-definitions";
+import { blockTheme } from "./block-definitions";
+import { compactRenderer } from "./block-renderer";
+import { setupBlockMenu } from "./block-menu";
 import { codeToWorkspace, workspaceToCode } from "./block-code";
 import { blocksToMini, miniToBlocks } from "./block-mini";
 import { choiceField, type SelectChoice } from "./choice-field";
@@ -27,6 +29,7 @@ export function setupBlockEditor(host: HTMLElement, options: BlockEditorOptions)
   host.innerHTML = `
     <div class="bd-workbar">
       <button type="button" class="bd-run" title="Run the current blocks (Ctrl+Enter)">Run</button>
+      <button type="button" class="bd-add-node" title="Open the block catalog">Add Node</button>
       <div class="bd-examples"></div>
       <div class="bd-rhythm-actions" aria-label="Rhythm conversion">
         <button type="button" data-mini="expand" title="Turn the selected Mini text into rhythm blocks">Expand Mini</button>
@@ -57,13 +60,12 @@ export function setupBlockEditor(host: HTMLElement, options: BlockEditorOptions)
 
   const compact = window.matchMedia("(max-width: 600px)").matches;
   const workspace = Blockly.inject(surface, {
-    theme: blockTheme, renderer: "zelos", toolbox: blockToolbox,
-    horizontalLayout: compact,
-    grid: { spacing: 24, length: 2, colour: "#46474a", snap: false },
+    theme: blockTheme, renderer: compactRenderer,
     move: { scrollbars: true, drag: true, wheel: true },
-    zoom: { controls: true, wheel: false, startScale: compact ? 0.62 : 0.88, maxScale: 1.8, minScale: 0.45 },
-    trashcan: true, sounds: false,
+    zoom: { controls: false, wheel: false, pinch: true, startScale: compact ? 0.84 : 1, maxScale: 1.8, minScale: 0.55 },
+    trashcan: false, sounds: false,
   });
+  const closeMenu = setupBlockMenu(workspace, surface, host.querySelector<HTMLButtonElement>(".bd-add-node")!);
   new ResizeObserver(() => { if (!host.hidden) Blockly.svgResize(workspace); }).observe(surface);
 
   let imported: { original: string; generated: string } | undefined;
@@ -72,7 +74,7 @@ export function setupBlockEditor(host: HTMLElement, options: BlockEditorOptions)
   let selectedId: string | undefined;
 
   function layout() {
-    if (host.hidden) return;
+    if (host.hidden) { closeMenu(); return; }
     Blockly.svgResize(workspace);
     if (scrollToStart) {
       workspace.scroll(0, 0);

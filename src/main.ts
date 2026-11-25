@@ -71,6 +71,7 @@ function resize() {
   activeRenderer.resize(width, height);
 }
 window.addEventListener("resize", resize);
+new ResizeObserver(resize).observe(canvas);
 resize();
 
 // --- performance metrics (exposed for stress testing) ---
@@ -286,6 +287,7 @@ const codeButton = document.getElementById("bd-show-code")!;
 const setCode = window.pdSetCode;
 let mode: "blocks" | "code" = "code";
 let blockSource: string | undefined;
+let sidebar: ReturnType<typeof setupSidebar> | undefined;
 
 const blockEditor = setupBlockEditor(blockHost, {
   run(code) {
@@ -302,6 +304,7 @@ const blockEditor = setupBlockEditor(blockHost, {
 });
 
 function showMode(next: typeof mode, message = "") {
+  const modeChanged = next !== mode;
   mode = next;
   const blocks = next === "blocks";
   codeHost.hidden = blocks;
@@ -311,7 +314,8 @@ function showMode(next: typeof mode, message = "") {
   codeButton.setAttribute("aria-pressed", String(!blocks));
   codeStatus.textContent = message;
   codeStatus.hidden = !message;
-  if (blocks) blockEditor.layout();
+  if (blocks && modeChanged) sidebar?.selectTab("reference");
+  blockEditor.layout();
   resize();
 }
 
@@ -352,4 +356,5 @@ document.getElementById("bd-open-output")!.addEventListener("click", () => proje
 showBlocks(currentCode);
 // A fresh session = no saved URL state. Tells the media loader to auto-pull the
 // curated CDN defaults so a first-time visitor lands with media ready.
-setupSidebar(!urlState, !document.body.classList.contains("bd-blocks"));
+const openedInBlocks = document.body.classList.contains("bd-blocks");
+sidebar = setupSidebar(!urlState, !openedInBlocks, openedInBlocks ? "reference" : undefined);

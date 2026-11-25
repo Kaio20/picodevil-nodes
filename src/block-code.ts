@@ -211,7 +211,7 @@ export function codeToWorkspace(code: string) {
     throw unsupported("This top-level expression");
   }
   const first = linkAll(blocks);
-  return { blocks: { languageVersion: 0, blocks: first ? [{ ...first, x: 32, y: 32 }] : [] } };
+  return { blocks: { languageVersion: 0, blocks: first ? [{ ...first, x: 14, y: 12 }] : [] } };
 }
 
 function required(block: Block, name: string): Block {

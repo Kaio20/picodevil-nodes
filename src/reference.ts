@@ -29,6 +29,7 @@ export function setupReference(container: HTMLElement) {
   const searchBox = document.createElement("input");
   searchBox.type = "text";
   searchBox.placeholder = "search…";
+  searchBox.setAttribute("aria-label", "Search reference");
   searchBox.className = "ref-search";
   navCol.appendChild(searchBox);
 

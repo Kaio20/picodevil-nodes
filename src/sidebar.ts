@@ -35,7 +35,7 @@ export function resolveSidebarOpen(raw: string | null, defaultOpen = true): bool
   try { return JSON.parse(raw).open ?? defaultOpen; } catch { return defaultOpen; }
 }
 
-export function setupSidebar(isFreshSession = false, defaultOpen = true) {
+export function setupSidebar(isFreshSession = false, defaultOpen = true, defaultTab?: string) {
   const toggle = document.getElementById("sidebar-toggle")!;
   const panel = document.getElementById("sidebar-panel")!;
   const handle = panel.querySelector<HTMLElement>(".resize-handle")!;
@@ -53,15 +53,20 @@ export function setupSidebar(isFreshSession = false, defaultOpen = true) {
   void panel.offsetWidth; // force reflow so "none" applies before restoring
   panel.style.transition = "";
 
-  // Restore width
-  if (saved.width) {
-    panel.style.width = saved.width + "px";
+  function setWidth(width: number) {
+    panel.style.width = `${width}px`;
+    document.body.style.setProperty("--bd-rail-width-preferred", `${width}px`);
   }
+  if (saved.width) setWidth(saved.width);
+
+  const labelToggle = () => toggle.setAttribute("aria-expanded", String(panel.classList.contains("open")));
+  labelToggle();
 
   toggle.addEventListener("click", () => {
     const open = panel.classList.toggle("open");
     toggle.classList.toggle("open", open);
     toggle.textContent = open ? "›" : "‹";
+    labelToggle();
     saveState({ open });
   });
 
@@ -73,7 +78,7 @@ export function setupSidebar(isFreshSession = false, defaultOpen = true) {
 
     const onMove = (e: MouseEvent) => {
       const w = Math.max(200, startWidth + (startX - e.clientX));
-      panel.style.width = w + "px";
+      setWidth(w);
     };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
@@ -101,25 +106,21 @@ export function setupSidebar(isFreshSession = false, defaultOpen = true) {
   // Tabs
   const tabs = panel.querySelectorAll<HTMLButtonElement>(".tabs button");
 
-  // Restore active tab, overriding the About default (index.html) when stored
-  if (saved.tab) {
-    tabs.forEach((t) => t.classList.remove("active"));
-    panel.querySelectorAll<HTMLElement>(".tab-content").forEach((el) => el.classList.remove("active"));
-    tabs.forEach((t) => {
-      if (t.dataset.tab === saved.tab) t.classList.add("active");
-    });
-    const tabEl = document.getElementById(`tab-${saved.tab}`);
-    if (tabEl) tabEl.classList.add("active");
+  function selectTab(name: string) {
+    tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
+    panel.querySelectorAll<HTMLElement>(".tab-content").forEach(el => el.classList.toggle("active", el.id === `tab-${name}`));
   }
+
+  const initialTab = defaultTab ?? saved.tab;
+  if (initialTab && Array.from(tabs).some(tab => tab.dataset.tab === initialTab)) selectTab(initialTab);
 
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
-      tabs.forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      panel.querySelectorAll<HTMLElement>(".tab-content").forEach((el) => {
-        el.classList.toggle("active", el.id === `tab-${tab.dataset.tab}`);
-      });
-      saveState({ tab: tab.dataset.tab });
+      const name = tab.dataset.tab;
+      if (!name) return;
+      selectTab(name);
+      saveState({ tab: name });
     });
   });
+  return { selectTab };
 }
