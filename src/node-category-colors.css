@@ -1,0 +1,32 @@
+/* NodesDevil palette. Replace a #RRGGBB value to change a color. */
+
+/* Full palette, in its original order.
+   #000000 #e03c28 #ffffff #d7d7d7 #a8a8a8 #7b7b7b #343434 #151515
+   #0d2030 #415d66 #71a6a1 #bdffca #25e2cd #0a98ac #005280 #00604b
+   #20b562 #58d332 #139d08 #004e00 #172808 #376d03 #6ab417 #8cd612
+   #beeb71 #eeffa9 #b6c121 #939717 #cc8f15 #ffbb31 #ffe737 #f68f37
+   #ad4e1a #231712 #5c3c0d #ae6c37 #c59782 #e2d7b5 #4f1507 #823c3d
+   #da655e #e18289 #f5b784 #ffe9c5 #ff82ce #cf3c71 #871646 #a328b3
+   #cc69e4 #d59cfc #fec9ed #e2c9ff #a675fe #6a31ca #5a1991 #211640
+   #3d34a5 #6264dc #9ba0ef #98dcff #5ba8ff #0a89ff #024aca #00177d
+*/
+
+/* Node categories */
+#node-editor [data-category="Sources"]   { --nd-category-color: #5ba8ff; --nd-category-fg-fallback: var(--fg-bright); }
+#node-editor [data-category="Signals"]   { --nd-category-color: #20b562; }
+#node-editor [data-category="Playback"]  { --nd-category-color: #f68f37; }
+#node-editor [data-category="Layout"]    { --nd-category-color: #ffe737; }
+#node-editor [data-category="Image"]     { --nd-category-color: #25e2cd; --nd-category-fg-fallback: var(--fg-bright); }
+#node-editor [data-category="Text"]      { --nd-category-color: #a675fe; }
+#node-editor [data-category="Variables"] { --nd-category-color: #ff82ce; --nd-category-fg-fallback: var(--fg-bright); }
+#node-editor [data-category="Output"]    { --nd-category-color: #e03c28; }
+
+/* Keep the Unreal Blueprint hues when updating port and variable colors. */
+:root {
+  --nd-color-visual:  #5ba8ff; /* Image: object-reference blue */
+  --nd-color-number:  #8cd612; /* Float (Factor, Alpha): yellow-green */
+  --nd-color-text:    #a675fe; /* Text (layer): pink */
+  --nd-color-string:  #cc69e4; /* String: magenta */
+  --nd-color-boolean: #e03c28; /* Boolean: red */
+  --nd-color-color:   #ffbb31; /* Color: RGB vector gold */
+}

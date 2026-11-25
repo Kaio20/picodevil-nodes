@@ -1,6 +1,9 @@
 import type { Gradient } from './gradient';
 
-export type FitMode = "cover" | "contain" | "fill" | "none" | "tile" | "tilecenter";
+export const fitModes = ["cover", "contain", "fill", "none", "tile", "tilecenter"] as const;
+export type FitMode = typeof fitModes[number];
+export const blendModes = ["source-over", "lighter", "add", "multiply", "screen", "destination-out", "subtract", "min", "max"] as const;
+export type BlendMode = typeof blendModes[number];
 export type LumaKey = "white" | "black";
 
 /**
@@ -74,6 +77,8 @@ export interface TileParams {
   brightness: number;
   /** Which end of the brightness range becomes transparent. */
   lumaToAlpha?: LumaKey;
+  /** RGB lookup ramp indexed by the input pixel's brightness. */
+  colorRamp?: Gradient;
   /** Tint hue target in [0,1] turns. */
   tintHue: number;
   /** Tint strength: 0 = no tint (default), 1 = full colorise, unclamped for hyper-saturation effects. */

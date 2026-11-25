@@ -137,7 +137,7 @@ function createMediaTab(container: HTMLElement, collection: MediaCollection) {
   const viewModeKey = "picodevil-" + collection + "-view";
   const gridScrollKey = "picodevil-" + collection + "-scroll";
   let viewMode: ViewMode = localStorage.getItem(viewModeKey) === "edit" ? "edit" : "view";
-  const catalog = collection === "textures" ? makeTextureCatalog(render) : undefined;
+  const catalog = collection === "textures" ? makeTextureCatalog(render, showToast) : undefined;
   const serverSettings = createServerSettingsButton().el;
 
   // Persisted scroll offset of the grid ("view") pane — restored across mode

@@ -17,11 +17,6 @@ export const textureFiles = {
       "trace_07.png", "twirl_01.png", "twirl_02.png", "twirl_03.png", "window_01.png", "window_02.png",
       "window_03.png", "window_04.png",
     ],
-    "rotated": [
-      "flame_05_rotated.png", "flame_06_rotated.png", "muzzle_01_rotated.png", "muzzle_02_rotated.png", "muzzle_03_rotated.png", "muzzle_04_rotated.png",
-      "muzzle_05_rotated.png", "spark_05_rotated.png", "spark_06_rotated.png", "trace_01_rotated.png", "trace_02_rotated.png", "trace_03_rotated.png",
-      "trace_04_rotated.png", "trace_05_rotated.png", "trace_06_rotated.png", "trace_07_rotated.png",
-    ],
   },
   "light-masks": {
     "original": [

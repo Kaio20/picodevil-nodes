@@ -782,6 +782,7 @@ export class FrameRenderer {
       contrast:      ev.contrast      !== undefined ? Number(ev.contrast)      : 1,
       brightness:    ev.brightness    !== undefined ? Number(ev.brightness)    : 0,
       lumaToAlpha:   ev.lumaToAlpha === 'white' || ev.lumaToAlpha === 'black' ? ev.lumaToAlpha : undefined,
+      colorRamp:     ev.colorRamp,
       tintHue:       ev.tintHue       !== undefined ? Number(ev.tintHue)       : 0,
       tintStrength:  ev.tintStrength  !== undefined ? Number(ev.tintStrength)  : 0,
       barrel:        ev.barrel        !== undefined ? Number(ev.barrel)        : 0,

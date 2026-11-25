@@ -3,7 +3,7 @@ import {
   compile,
   OP_SAMPLE, OP_BARREL, OP_PIXELATE, OP_WRAP,
   OP_CONTRAST, OP_BRIGHTNESS, OP_COLOR_OKLAB, OP_ALPHA,
-  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE, OP_LUMA_TO_ALPHA,
+  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE, OP_LUMA_TO_ALPHA, OP_COLOR_RAMP,
   OP_FLOATS, MAX_OPS,
   vignetteBand,
   type EffectInputs,
@@ -211,6 +211,7 @@ describe("effect-compiler", () => {
         barrel: 0.2,
         vignette: 1,
         lumaToAlpha: "white",
+        rampTexIndex: 4,
         cropOffX: 0.1, cropOffY: 0.1,
         cropSizeX: 0.8, cropSizeY: 0.8,
         tileMode: 1,
@@ -219,11 +220,13 @@ describe("effect-compiler", () => {
         matteTexIndex: 3, matteAmt: 1, matteSpace: 0,
         matteUVScaleX: 1, matteUVScaleY: 1,
       };
-      const ks = kinds(compile(e));
+      const ops = compile(e);
+      const ks = kinds(ops);
       expect(ks).toEqual([
         OP_BARREL, OP_MODULATE, OP_PIXELATE, OP_WRAP, OP_SAMPLE,
-        OP_BRIGHTNESS, OP_CONTRAST, OP_COLOR_OKLAB, OP_LUMA_TO_ALPHA, OP_MATTE, OP_VIGNETTE, OP_ALPHA,
+        OP_BRIGHTNESS, OP_CONTRAST, OP_COLOR_OKLAB, OP_LUMA_TO_ALPHA, OP_COLOR_RAMP, OP_MATTE, OP_VIGNETTE, OP_ALPHA,
       ]);
+      expect(ops[ks.indexOf(OP_COLOR_RAMP) * OP_FLOATS + 1]).toBe(4);
       expect(ks.length).toBe(MAX_OPS);
     });
   });

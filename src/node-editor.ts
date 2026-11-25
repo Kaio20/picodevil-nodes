@@ -1,18 +1,19 @@
 import {
-  definition, fftBands, fontAxes, fontAxisFor, inputsFor, insertNodeOnEdge, isRenderable, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, modeFor, nodeKinds, outputsFor, outputType,
-  previewType, valueTypes, variableFor, withEdge, type Graph, type GraphEdge, type GraphNode,
+  definition, fftBands, fontAxes, fontAxisFor, inputsFor, insertNodeOnEdge, isRenderable, isVariableSetter, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, modeFor, nodeKinds, outputsFor, outputType,
+  previewType, rampInterpolation, rampStops, valueTypes, withEdge, type Graph, type GraphEdge, type GraphNode,
   type Literal, type NodeDrop, type NodeMode, type ValueType,
 } from "./node-graph";
 import type { PreviewTarget } from "./node-runtime";
 import { setSidebarDropReceiver, type SidebarDropOptions } from "./node-sidebar-drag";
 import { getAllEntries, isTexture, type MediaEntry } from "./media-registry";
-import { bundledTexture, texturePacks, useBundledTexture } from "./texture-library";
+import { catalogTexture, getTexturePacks, useCatalogTexture } from "./texture-library";
 import { FONT_AXES } from "./font-list";
 import { referenceForNode, type RefEntry } from "./reference";
 import { setupNodeTooltip } from "./node-tooltip";
 import { bindNumberDrag, trackPointerDrag } from "./node-number-input";
 import { gradientField } from "./node-gradient-input";
-import { defaultGradient, gradientResolution, isGradient } from "./gradient";
+import { clampUnit, colorFromCss, isColorValue } from "./color-value";
+import { colorField } from "./node-color-input";
 
 export interface GraphView { x: number; y: number; zoom: number; previews: string[] }
 interface Options {
@@ -33,7 +34,7 @@ type AttachNode = (graph: Graph, node: GraphNode) => Graph | undefined;
 interface MenuChoice { drop: NodeDrop; name: string; category: string; modes?: NodeMode[]; search: string[] }
 const svgNamespace = "http://www.w3.org/2000/svg";
 const portDropPadding = 10;
-const typeLabels: Record<ValueType, string> = { visual: "Image", textLayer: "Text", number: "Float", text: "String", boolean: "Boolean", gradient: "Gradient" };
+const typeLabels: Record<ValueType, string> = { visual: "Image", textLayer: "Text", number: "Float", text: "String", boolean: "Boolean", color: "Color" };
 const categoryIcons: Record<string, string> = {
   Sources: "▣", Signals: "∿", Playback: "▶", Layout: "▦", Image: "◐", Text: "T", Variables: "{}",
 };
@@ -277,6 +278,7 @@ export class NodeEditor {
   private wires = document.createElementNS(svgNamespace, "svg");
   private selectionBox = element("div", "nd-selection-box");
   private menu = element("div", "nd-menu");
+  private menuAnchor?: Point;
   private dismissMenu?: () => void;
   private variables = element("div", "nd-variables");
   private ghost = element("div", "nd-drop-ghost");
@@ -336,7 +338,8 @@ export class NodeEditor {
       this.openMenu(this.local(event.clientX, event.clientY));
     });
     this.viewport.addEventListener("wheel", event => {
-      if ((event.target as Element).closest(".nd-menu, .nd-variables, input, select")) return;
+      if ((event.target as Element).closest(".nd-menu, .nd-variables, .nd-color-popover, input, select")) return;
+      this.world.querySelector<HTMLElement>(".nd-color-popover:popover-open")?.hidePopover();
       event.preventDefault();
       this.zoom(Math.exp(-event.deltaY * 0.0017), this.local(event.clientX, event.clientY));
       this.save();
@@ -352,7 +355,10 @@ export class NodeEditor {
       if (!this.menu.hidden && (alreadyOpen || event.detail === 0) && !this.menu.contains(event.target as Node)) this.closeMenu();
     }, { capture: true });
     document.addEventListener("keydown", event => this.keydown(event));
-    new ResizeObserver(() => this.drawWires()).observe(this.viewport);
+    new ResizeObserver(() => {
+      this.drawWires();
+      this.positionMenu();
+    }).observe(this.viewport);
     setSidebarDropReceiver((drop, x, y, commit, options) => this.receive(drop, x, y, commit, options));
     this.render();
   }
@@ -370,8 +376,8 @@ export class NodeEditor {
 
   mediaChanged() {
     const entries = getAllEntries();
-    const signature = JSON.stringify(entries.map(({ id, name, url, type, collection, unavailable }) =>
-      [id, name, url, type, collection, unavailable]));
+    const sources = entries.map(({ id, name, url, type, collection, unavailable }) => [id, name, url, type, collection, unavailable]);
+    const signature = JSON.stringify([getTexturePacks().length, sources]);
     if (this.mediaSignature === signature) return;
     this.mediaSignature = signature;
     this.dismissTooltip();
@@ -452,7 +458,7 @@ export class NodeEditor {
 
   private render() {
     this.dismissTooltip();
-    const existing = new Map(this.previews.map(target => [target.id, target]));
+    const existing = new Map(this.previews.filter(target => !target.showRamp).map(target => [target.id, target]));
     this.previews = [];
     this.world.replaceChildren();
     this.cards.clear();
@@ -468,6 +474,8 @@ export class NodeEditor {
 
   private renderNode(node: GraphNode, previous?: PreviewTarget) {
     const def = definition(node.kind);
+    const variableSetter = isVariableSetter(this.graph, node);
+    const label = node.kind === "variable" ? (variableSetter ? "Set Variable" : "Get Variable") : def.label;
     const card = element("article", "nd-node");
     card.dataset.nodeId = node.id;
     card.dataset.kind = node.kind;
@@ -483,10 +491,10 @@ export class NodeEditor {
     const activeMode = modeFor(node);
     const { entry, summary } = referenceForNode(node.kind, activeMode);
     const title = entry
-      ? button(def.label, () => this.options.openReference(entry), "nd-node-title")
-      : element("span", "nd-node-title", def.label);
-    if (entry) title.setAttribute("aria-label", `${def.label} reference`);
-    title.dataset.tooltip = [activeMode ? `${def.label} · ${activeMode.label}` : def.label, summary, entry && "Open Reference"].filter(Boolean).join("\n");
+      ? button(label, () => this.options.openReference(entry), "nd-node-title")
+      : element("span", "nd-node-title", label);
+    if (entry) title.setAttribute("aria-label", `${label} reference`);
+    title.dataset.tooltip = [activeMode ? `${label} · ${activeMode.label}` : label, summary, entry && "Open Reference"].filter(Boolean).join("\n");
     header.append(title);
     header.addEventListener("pointerdown", event => this.startNodeMove(event, node));
     const type = previewType(this.graph, node);
@@ -499,7 +507,7 @@ export class NodeEditor {
         this.cards.get(node.id)?.querySelector<HTMLButtonElement>(".nd-preview-toggle")?.focus();
       }, "nd-preview-toggle");
       toggle.setAttribute("aria-expanded", String(open));
-      toggle.setAttribute("aria-label", `Preview ${def.label}`);
+      toggle.setAttribute("aria-label", `Preview ${label}`);
       header.append(toggle);
     }
     card.append(header);
@@ -516,8 +524,8 @@ export class NodeEditor {
     }
     if (hasSourcePicker) {
       body.append(select([], "", def.label, value => {
-        const bundled = node.kind === "texture" ? bundledTexture(value) : undefined;
-        this.setData(node, "media", bundled ? useBundledTexture(bundled).id : value);
+        const texture = node.kind === "texture" ? catalogTexture(value) : undefined;
+        this.setData(node, "media", texture ? useCatalogTexture(texture).id : value);
         this.cards.get(node.id)?.querySelector("select")?.focus();
       }));
       body.append(element("small", "nd-node-error", `${def.label} unavailable`));
@@ -528,57 +536,103 @@ export class NodeEditor {
       const band = fftBands.find(band => band === node.data.band) ?? "bass";
       body.append(select(fftBands.map((band, index) => [band, bandLabels[index], bandDescriptions[index]]), band, "FFT band", value => this.setData(node, "band", value)));
     }
-    if (node.kind === "get" || node.kind === "set") {
-      const choices = this.graph.variables.filter(variable => node.kind === "get" || !this.graph.nodes.some(other => other.id !== node.id && other.kind === "set" && other.data.variable === variable.id));
+    if (node.kind === "variable") {
+      const choices = this.graph.variables.filter(variable => !variableSetter || !this.graph.nodes.some(other =>
+        other !== node && other.data.variable === variable.id && isVariableSetter(this.graph, other)));
       const options: SelectChoice[] = choices.map(item => [item.id, item.name, typeLabels[item.type]]);
       body.append(select([["", "Choose variable…"], ...options], String(node.data.variable ?? ""), "Variable", value => this.setData(node, "variable", value)));
     }
     for (const output of outputsFor(this.graph, node)) {
       const row = element("div", "nd-port-row nd-port-out");
       row.dataset.type = output.type;
-      const label = output.label ?? (isRenderable(output.type) || output.type === "gradient" ? typeLabels[output.type] : "Value");
+      const label = output.label ?? (isRenderable(output.type) || output.type === "color" ? typeLabels[output.type] : "Value");
       row.append(element("span", "", label), this.port(node, output.type, { output: output.id }, output.label));
       body.append(row);
     }
-    for (const socket of inputsFor(this.graph, node)) {
+    const inputs = inputsFor(this.graph, node);
+    let ramp: ReturnType<typeof gradientField> | undefined;
+    if (node.kind === "colorRamp") {
+      card.classList.add("nd-gradient-node");
+      const colors = new Map(inputs.flatMap(socket => {
+        if (socket.type !== "color" || !isColorValue(socket.default)) return [];
+        const color = node.data[socket.id];
+        return [[socket.id, isColorValue(color) ? color : socket.default] as const];
+      }));
+      ramp = gradientField(rampStops(node), colors, rampInterpolation(node), (stops, active, added) => {
+        const current = this.graph.nodes.find(item => item.id === node.id);
+        if (!current) return;
+        const data: GraphNode["data"] = { ...current.data, stops };
+        const removed = rampStops(current).find(stop => !stops.some(next => next.id === stop.id));
+        if (removed) delete data[removed.id];
+        if (added) data[active] = added;
+        this.change({
+          ...this.graph,
+          nodes: this.graph.nodes.map(item => item === current ? { ...item, data } : item),
+          edges: removed ? this.graph.edges.filter(edge => edge.to !== node.id || edge.input !== removed.id) : this.graph.edges,
+        });
+        this.cards.get(node.id)?.querySelector<HTMLButtonElement>(`[data-ramp-stop="${active}"]`)?.focus();
+      }, value => this.editLiteral(node.id, "interpolation", value, true));
+      body.append(ramp.field);
+      const wired = new Set(this.graph.edges.filter(edge => edge.to === node.id && colors.has(edge.input)).map(edge => edge.input));
+      if (wired.size) {
+        const status = element("span", "nd-preview-status");
+        ramp.field.append(status);
+        const showRamp = ramp.showGradient;
+        this.previews.push({ id: node.id, element: ramp.field, status, samples: [], showRamp: value => showRamp(wired, value) });
+      }
+    }
+    for (const socket of inputs) {
       const fontAxis = node.kind === "fontAxis" && socket.id === "tag";
-      const row = element(fontAxis ? "div" : "label", "nd-port-row");
+      const row = element(fontAxis || socket.type === "color" ? "div" : "label", "nd-port-row");
       row.dataset.type = socket.type;
       const connected = this.graph.edges.some(edge => edge.to === node.id && edge.input === socket.id);
       row.classList.toggle("nd-connected", connected);
-      if (!connected && !socket.optional && socket.default === undefined) row.classList.add("nd-required");
+      if (!connected && node.kind !== "variable" && !socket.optional && socket.default === undefined) row.classList.add("nd-required");
       row.append(this.port(node, socket.type, { input: socket.id }), element("span", "", socket.label));
-      if (socket.type === "gradient") {
-        card.classList.add("nd-gradient-node");
-        body.append(row);
-        if (!connected) {
-          const value = node.data[socket.id];
-          body.append(gradientField(isGradient(value) ? value : defaultGradient, value => this.editLiteral(node.id, socket.id, value, true)));
-        }
-        continue;
-      }
-      if (fontAxis && !connected) {
+      if (!connected && socket.type === "color" && (socket.optional || socket.default !== undefined)) {
+        const value = node.data[socket.id] ?? socket.default;
+        const color = isColorValue(value) ? value : typeof value === "string" ? colorFromCss(value) : undefined;
+        row.append(colorField(color, socket.label, value => {
+          this.editLiteral(node.id, socket.id, value, true);
+          if (value) ramp?.setColor(socket.id, value);
+        }, socket.optional, value !== undefined));
+      } else if (fontAxis && !connected) {
         row.append(this.fontAxisField(node, String(node.data.tag ?? socket.default)));
-      } else if (!connected && (socket.optional || socket.default !== undefined)) {
+      } else if (!connected && socket.choices) {
+        const value = String(node.data[socket.id] ?? socket.default ?? "");
+        const choices = socket.choices.map<SelectChoice>(choice => [choice, choice]);
+        // Keep values saved before this socket offered a dropdown.
+        if (!socket.choices.includes(value)) choices.push([value, value || "(empty)"]);
+        row.append(select(choices, value, socket.label, selected => this.editLiteral(node.id, socket.id, selected, true)));
+      } else if (!connected && (socket.type === "number" || socket.type === "boolean" || socket.type === "text") &&
+          (socket.optional || socket.default !== undefined)) {
         const input = element("input", "nd-field");
         input.type = socket.type === "boolean" ? "checkbox" : socket.type === "number" ? "number" : "text";
         input.step = "any";
-        if (node.kind === "colorRamp" && socket.id === "factor") {
+        if (socket.unitInterval) {
           input.min = "0";
           input.max = "1";
+          input.addEventListener("change", () => {
+            if (input.validity.rangeUnderflow || input.validity.rangeOverflow) {
+              input.value = String(clampUnit(input.valueAsNumber));
+            }
+          });
         }
         input.setAttribute("aria-label", socket.label);
-        input.value = String(node.data[socket.id] ?? socket.default ?? "");
+        const literal = node.data[socket.id] ?? socket.default;
+        input.value = String(socket.unitInterval && typeof literal === "number" ? clampUnit(literal) : literal ?? "");
         if (socket.optional) input.placeholder = node.kind === "scale" ? "Uniform" : node.kind === "grid" ? "Auto" : "—";
-        input.checked = (node.data[socket.id] ?? socket.default) === true;
+        input.checked = literal === true;
         let editing = false;
         input.addEventListener("blur", () => { editing = false; });
         input.addEventListener("input", () => {
+          if (input.validity.badInput) return;
           const value = input.type === "checkbox" ? input.checked
             : socket.optional && input.value === "" ? undefined
             : input.type === "number" ? input.valueAsNumber : input.value;
           if (typeof value === "number" && !Number.isFinite(value)) return;
-          this.editLiteral(node.id, socket.id, value, !editing);
+          const normalized = socket.unitInterval && typeof value === "number" ? clampUnit(value) : value;
+          this.editLiteral(node.id, socket.id, normalized, !editing);
           editing = true;
         });
         if (input.type === "number") {
@@ -590,6 +644,7 @@ export class NodeEditor {
         row.append(input);
       }
       if (fontAxis) body.prepend(row);
+      else if (ramp && socket.id === "image") body.insertBefore(row, ramp.field);
       else body.append(row);
     }
     if (node.kind === "output") {
@@ -661,7 +716,7 @@ export class NodeEditor {
     const registered = new Map<string, MediaEntry>();
     const local: MediaEntry[] = [];
     for (const entry of entries) {
-      if (bundledTexture(entry.url) && !registered.has(entry.url)) registered.set(entry.url, entry);
+      if (catalogTexture(entry.url) && !registered.has(entry.url)) registered.set(entry.url, entry);
       else local.push(entry);
     }
     picker.replaceChildren(new Option("Choose texture…", ""));
@@ -671,16 +726,12 @@ export class NodeEditor {
       group.append(...local.map(({ id, name }) => new Option(name, id)));
       picker.append(group);
     }
-    for (const pack of texturePacks) {
+    for (const pack of getTexturePacks()) {
       const group = document.createElement("optgroup");
       group.label = pack.label;
-      for (const variant of pack.variants) {
-        const suffix = variant.id === "original" ? "" : ` · ${variant.label}`;
-        for (const texture of variant.textures) {
-          const name = registered.get(texture.url)?.name;
-          const label = name && name !== texture.name ? name : texture.label;
-          group.append(new Option(label + suffix, texture.url));
-        }
+      for (const texture of pack.textures) {
+        const name = registered.get(texture.url)?.name;
+        group.append(new Option(name && name !== texture.name ? name : texture.label, texture.url));
       }
       picker.append(group);
     }
@@ -692,10 +743,10 @@ export class NodeEditor {
     wrap.dataset.type = type;
     const status = element("span", "nd-preview-status", "Loading…");
     const renderable = isRenderable(type);
-    const canvas = renderable || type === "number" || type === "gradient" ? element("canvas", "nd-thumbnail") : undefined;
+    const canvas = renderable || type === "number" || type === "color" ? element("canvas", "nd-thumbnail") : undefined;
     if (canvas) {
-      canvas.width = type === "gradient" ? gradientResolution : 200;
-      canvas.height = type === "gradient" ? 1 : renderable ? 112 : 36;
+      canvas.width = type === "color" ? 1 : 200;
+      canvas.height = type === "color" ? 1 : renderable ? 112 : 36;
       wrap.append(canvas);
     }
     wrap.append(status);
@@ -712,10 +763,12 @@ export class NodeEditor {
     if (output !== undefined) socket.dataset.output = output;
     const inputSocket = input ? inputsFor(this.graph, node).find(item => item.id === input) : undefined;
     const label = inputSocket?.label ?? outputLabel ?? "Output";
-    const types = inputSocket?.acceptsTextLayer ? "Image or Text" : typeLabels[type];
+    const types = inputSocket?.acceptsTextLayer ? "Image, Text or Color" : typeLabels[type];
     const connected = this.edgesAt(port).length > 0;
     socket.dataset.tooltip = `${label} · ${types}${connected ? "\nAlt-click to disconnect" : ""}`;
-    socket.setAttribute("aria-label", `${definition(node.kind).label} ${input ?? (outputLabel ? outputLabel + " output" : "output")} (${type})`);
+    const useInputLabel = node.kind === "variable" || (node.kind === "colorRamp" && inputSocket?.type === "color");
+    const inputName = useInputLabel ? inputSocket?.label : input;
+    socket.setAttribute("aria-label", `${definition(node.kind).label} ${inputName ?? (outputLabel ? outputLabel + " output" : "output")} (${type})`);
     socket.addEventListener("pointerdown", event => this.startWire(event, port));
     socket.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -735,7 +788,6 @@ export class NodeEditor {
   private setData(node: GraphNode, key: string, value: Literal) {
     if (node.data[key] === value) return;
     const data = { ...node.data, [key]: value };
-    if (key === "variable") delete data.value;
     if (node.kind === "fontAxis" && key === "tag") {
       const axis = fontAxisFor(value);
       if (typeof axis?.value === "number") data.value = axis.value;
@@ -1305,10 +1357,10 @@ export class NodeEditor {
     for (const kind of nodeKinds) {
       if (kind === "output") continue;
       const def = definition(kind);
-      const options = kind === "get" || kind === "set"
-        ? base.variables.filter(variable => kind === "get" || !base.nodes.some(node => node.kind === "set" && node.data.variable === variable.id))
-          .map(variable => ({ name: `${kind === "get" ? "Get" : "Set"} ${variable.name}`, data: { variable: variable.id } }))
-        : [{ name: def.label, data: undefined }];
+      if (def.hidden) continue;
+      const options = kind === "variable" && port
+        ? base.variables.map(variable => ({ name: `Variable · ${variable.name}`, data: { variable: variable.id } }))
+        : [{ name: def.label, data: kind === "variable" && base.variables.length === 1 ? { variable: base.variables[0].id } : undefined }];
       for (const option of options) {
         const node: GraphNode = { id: "menu-node", kind, ...position, data: option.data ?? {} };
         const compatible = (candidate: GraphNode) => !attach || Boolean(attach({ ...base, nodes: [...base.nodes, candidate] }, candidate));
@@ -1316,7 +1368,7 @@ export class NodeEditor {
         if (modes ? modes.length === 0 : !compatible(node)) continue;
         choices.push({
           drop: { kind, data: option.data }, name: option.name, category: def.category, modes,
-          search: [option.name, kind, ...(def.reference ?? [])],
+          search: [option.name, kind, ...(def.reference ?? []), ...(def.aliases ?? [])],
         });
       }
     }
@@ -1333,17 +1385,40 @@ export class NodeEditor {
     this.dismissMenu = dismiss;
     this.menu.replaceChildren(...children);
     this.menu.classList.toggle("nd-catalog-menu", catalog);
+    this.menuAnchor = point;
+    this.menu.hidden = false;
+    if (catalog && typeof this.menu.showPopover === "function") {
+      this.menu.setAttribute("popover", "manual");
+      this.menu.showPopover();
+    }
+    this.positionMenu();
+  }
+
+  private positionMenu() {
+    const point = this.menuAnchor;
+    if (!point) return;
+    const catalog = this.menu.classList.contains("nd-catalog-menu");
+    const fixed = this.menu.hasAttribute("popover");
+    const bounds = this.viewport.getBoundingClientRect();
     const panelHeight = Math.min(420, Math.max(0, this.viewport.clientHeight - 8));
     this.menu.style.setProperty("--nd-menu-height", `${panelHeight}px`);
-    this.menu.hidden = false;
+    this.menu.style.setProperty("--nd-menu-width", `${Math.min(536, Math.max(0, this.viewport.clientWidth - 8))}px`);
     const height = catalog ? panelHeight : this.menu.offsetHeight;
-    this.menu.style.left = `${Math.max(4, Math.min(point.x, this.viewport.clientWidth - this.menu.offsetWidth - 4))}px`;
-    this.menu.style.top = `${Math.max(4, Math.min(point.y, this.viewport.clientHeight - height - 4))}px`;
+    const x = Math.max(4, Math.min(point.x, this.viewport.clientWidth - this.menu.offsetWidth - 4));
+    const y = Math.max(4, Math.min(point.y, this.viewport.clientHeight - height - 4));
+    this.menu.style.left = `${x + (fixed ? bounds.left : 0)}px`;
+    this.menu.style.top = `${y + (fixed ? bounds.top : 0)}px`;
   }
 
   private closeMenu(dismiss = true) {
     const action = this.dismissMenu;
     this.dismissMenu = undefined;
+    this.menuAnchor = undefined;
+    if (!this.menu.hidden) this.dismissTooltip();
+    if (this.menu.hasAttribute("popover")) {
+      this.menu.hidePopover();
+      this.menu.removeAttribute("popover");
+    }
     this.menu.hidden = true;
     if (dismiss) action?.();
   }
@@ -1483,13 +1558,13 @@ export class NodeEditor {
       if (target.matches("input,select")) (target as HTMLElement).blur();
       this.run();
     }
-    if (target.closest("input,select,textarea") || !this.host.contains(target)) return;
+    if (target.closest("input,select,textarea,.nd-color-popover") || !this.host.contains(target)) return;
     if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(event.key.toLowerCase())) {
       event.preventDefault();
       this.cancelDrag?.();
       if (event.shiftKey || event.key.toLowerCase() === "y") this.redo(); else this.undo();
     }
-    if (event.key === "Delete" && !this.cancelDrag && !target.closest(".nd-gradient")) {
+    if (event.key === "Delete" && !this.cancelDrag && !target.closest(".nd-gradient, .nd-color-field")) {
       if (this.selectedEdge) this.removeEdge(this.selectedEdge);
       else if (this.selected.size) this.removeNodes(this.selected);
     }

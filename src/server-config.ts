@@ -12,6 +12,8 @@
  * External URLs (CDN, blob:, data:, YouTube proxy results) pass through unchanged.
  */
 
+import { resolveLocalTexture } from "./local-texture-folders";
+
 export type ServerStatus = "unknown" | "checking" | "ok" | "error";
 
 export interface HealthResponse {
@@ -169,6 +171,8 @@ export async function probeHealth(url?: string): Promise<HealthResponse | null> 
 /**
  * Resolve a stored entry URL to a fetchable URL.
  *
+ * Local texture IDs resolve to blob URLs from this browser's imported folders.
+ *
  * Pass-through (returned unchanged):
  *  - Anything with a scheme (`http:`, `https:`, `blob:`, `data:`, etc.) — external sources.
  *  - Protocol-relative URLs (`//example.com/foo`).
@@ -179,6 +183,7 @@ export async function probeHealth(url?: string): Promise<HealthResponse | null> 
  */
 export function resolveUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return pathOrUrl;
+  if (pathOrUrl.startsWith("local-texture:")) return resolveLocalTexture(pathOrUrl);
   // Bundled textures are served by the app, even when a media server is configured.
   if (pathOrUrl.startsWith("/textures/")) return pathOrUrl;
   // Has a scheme? (rfc3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":")

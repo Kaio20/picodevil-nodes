@@ -199,7 +199,7 @@ export class TextureCache {
     const { gl } = this;
     const texture = this.createTexture();
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    if (gradient.space === 'RGB' && gradient.interpolation === 'Constant') {
+    if (gradient.interpolation === 'Constant') {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     }

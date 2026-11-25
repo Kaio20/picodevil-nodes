@@ -1,4 +1,4 @@
-import { AUTO_PREFIX, type Renderer, type TileParams, type TileSource } from './renderer-interface';
+import { AUTO_PREFIX, type BlendMode, type Renderer, type TileParams, type TileSource } from './renderer-interface';
 import { ladderStep } from './modulate-sizing';
 import { TextureCache } from './texture-cache';
 import { warn } from './warnings';
@@ -7,7 +7,7 @@ import {
   compileInto, OP_FLOATS, MAX_OPS,
   OP_SAMPLE, OP_BARREL, OP_PIXELATE, OP_WRAP,
   OP_CONTRAST, OP_BRIGHTNESS, OP_COLOR_OKLAB, OP_ALPHA,
-  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE, OP_LUMA_TO_ALPHA,
+  OP_MODULATE, OP_SMEAR, OP_VIGNETTE, OP_MATTE, OP_LUMA_TO_ALPHA, OP_COLOR_RAMP,
 } from './effect-compiler';
 
 // ---------------------------------------------------------------------------
@@ -214,6 +214,7 @@ out vec4 fragColor;
 #define OP_SMEAR       ${OP_SMEAR}
 #define OP_VIGNETTE    ${OP_VIGNETTE}
 #define OP_LUMA_TO_ALPHA ${OP_LUMA_TO_ALPHA}
+#define OP_COLOR_RAMP  ${OP_COLOR_RAMP}
 #define OP_MATTE       ${OP_MATTE}
 
 vec4 sampleAny(int texIdx, vec2 uv) {
@@ -571,6 +572,11 @@ void main() {
       float luma = clamp(pdLum(color.rgb), 0.0, 1.0);
       color.a *= a.y > 0.5 ? luma : 1.0 - luma;
       color.rgb = vec3(a.y);
+    } else if (kind == OP_COLOR_RAMP) {
+      float luma = clamp(pdLum(color.rgb), 0.0, 1.0);
+      highp float rampU = (luma * ${gradientResolution - 1}.0 + 0.5) / ${gradientResolution}.0;
+      vec4 mapped = sampleAny(int(a.y), vec2(rampU, 0.5));
+      color = vec4(mapped.rgb, color.a * mapped.a);
     } else if (kind == OP_MATTE) {
       // Alpha keyed off a matte texture's luminance (always an FBO: y-up texels).
       // a.y = texIdx, a.z = amount, a.w = space (0 uv / 1 tile / 2 screen)
@@ -625,7 +631,8 @@ void main() {
 // Using blendEquationSeparate + blendFuncSeparate.
 // MIN/MAX equations ignore blend factors entirely.
 const GL = WebGL2RenderingContext;
-const BLEND_MODES: Record<string, [GLenum, GLenum, GLenum, GLenum, GLenum, GLenum]> = {
+type BlendSettings = [GLenum, GLenum, GLenum, GLenum, GLenum, GLenum];
+const BLEND_MODES: Record<string, BlendSettings> = {
   'source-over':    [GL.FUNC_ADD,      GL.FUNC_ADD, GL.SRC_ALPHA,  GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA],
   'lighter':        [GL.FUNC_ADD,      GL.FUNC_ADD, GL.SRC_ALPHA,  GL.ONE,                 GL.ONE, GL.ONE],
   'add':            [GL.FUNC_ADD,      GL.FUNC_ADD, GL.SRC_ALPHA,  GL.ONE,                 GL.ONE, GL.ONE],
@@ -635,7 +642,7 @@ const BLEND_MODES: Record<string, [GLenum, GLenum, GLenum, GLenum, GLenum, GLenu
   'subtract':       [GL.FUNC_REVERSE_SUBTRACT, GL.FUNC_ADD, GL.SRC_ALPHA, GL.ONE,            GL.ONE, GL.ONE_MINUS_SRC_ALPHA],
   'min':            [GL.MIN,           GL.FUNC_ADD, GL.ONE,        GL.ONE,                 GL.ONE, GL.ONE_MINUS_SRC_ALPHA],
   'max':            [GL.MAX,           GL.FUNC_ADD, GL.ONE,        GL.ONE,                 GL.ONE, GL.ONE_MINUS_SRC_ALPHA],
-};
+} satisfies Record<BlendMode, BlendSettings>;
 
 // ---------------------------------------------------------------------------
 // UV computation (CPU-side)
@@ -813,6 +820,7 @@ interface DrawCommand {
   contrast:     number;
   brightness:   number;
   lumaToAlpha?: TileParams['lumaToAlpha'];
+  rampTexture: WebGLTexture | null;
   tintHue:      number;
   tintStrength: number;
   barrel:       number;
@@ -1195,6 +1203,7 @@ export class WebGLRenderer implements Renderer {
     let tex: WebGLTexture | null;
     let srcW: number, srcH: number;
     let fboSource = false;
+    const rampTexture = p.colorRamp ? this.texCache.get({ kind: 'gradient', gradient: p.colorRamp }) : null;
 
     // For a sub-viewport FBO source (a footprint-sized `.render()` bake), the
     // rendered content occupies only [0,viewW]×[0,viewH] of the texture's
@@ -1326,6 +1335,7 @@ export class WebGLRenderer implements Renderer {
         contrast:     p.contrast ?? 1,
         brightness:   p.brightness ?? 0,
         lumaToAlpha:  p.lumaToAlpha,
+        rampTexture,
         tintHue:      p.tintHue      ?? 0,
         tintStrength: p.tintStrength ?? 0,
         barrel:       p.barrel       ?? 0,
@@ -1393,6 +1403,7 @@ export class WebGLRenderer implements Renderer {
       contrast:     p.contrast ?? 1,
       brightness:   p.brightness ?? 0,
       lumaToAlpha:  p.lumaToAlpha,
+      rampTexture,
       tintHue:      p.tintHue      ?? 0,
       tintStrength: p.tintStrength ?? 0,
       barrel:       p.barrel       ?? 0,
@@ -1490,13 +1501,14 @@ export class WebGLRenderer implements Renderer {
       }
     };
 
-    /** Compile cmd's effects with the supplied texIdx/modTexIdx, dedup against
+    /** Compile cmd's effects with the batch-local texture units, dedup against
      *  this batch's ops buffer, and write the result's (offset, count) into the
      *  per-instance arrays. Returns false if ops would overflow the UBO. */
-    const tryCompileForBatch = (i: number, cmd: DrawCommand, texIdx: number, modTexIdx: number, matteTexIdx: number): boolean => {
+    const tryCompileForBatch = (i: number, cmd: DrawCommand): boolean => {
+      const unitOf = (texture: WebGLTexture | null) => texture ? texUnits.get(texture)! : -1;
       // Compile into scratch with the batch-local texIdx.
       const opCount = compileInto({
-        texIndex:     texIdx,
+        texIndex:     unitOf(cmd.texture),
         alpha:        cmd.alpha,
         grey:         cmd.grey,
         hueRot:       cmd.hueRot,
@@ -1505,6 +1517,7 @@ export class WebGLRenderer implements Renderer {
         contrast:     cmd.contrast,
         brightness:   cmd.brightness,
         lumaToAlpha:  cmd.lumaToAlpha,
+        rampTexIndex: unitOf(cmd.rampTexture),
         tintHue:      cmd.tintHue,
         tintStrength: cmd.tintStrength,
         barrel:       cmd.barrel,
@@ -1514,12 +1527,12 @@ export class WebGLRenderer implements Renderer {
         cropSizeX:    cmd.cropSizeX,
         cropSizeY:    cmd.cropSizeY,
         tileMode:     cmd.tileMode,
-        modTexIndex:  modTexIdx,
+        modTexIndex:  unitOf(cmd.modTexture),
         modAmt:       cmd.modAmt,
         modSpace:     cmd.modSpace,
         modUVScaleX:  cmd.modUVScaleX,
         modUVScaleY:  cmd.modUVScaleY,
-        matteTexIndex: matteTexIdx,
+        matteTexIndex: unitOf(cmd.matteTexture),
         matteAmt:      cmd.matteAmt,
         matteSpace:    cmd.matteSpace,
         matteUVScaleX: cmd.matteUVScaleX,
@@ -1560,21 +1573,21 @@ export class WebGLRenderer implements Renderer {
       return true;
     };
 
-    // Every texture one tile samples: its own source plus any auxiliary FBOs
-    // (modulator, matte). All of them must be bound in the SAME batch, so both
+    // Every texture one tile samples: its source, optional auxiliary FBOs
+    // (modulator, matte), and ramp lookup. All must be bound in the same batch, so both
     // the unit-budget check and the overflow retry work off this list.
     const tileTextures = (cmd: DrawCommand): WebGLTexture[] => {
       const out: WebGLTexture[] = [cmd.texture];
       if (cmd.modTexture && !out.includes(cmd.modTexture)) out.push(cmd.modTexture);
       if (cmd.matteTexture && !out.includes(cmd.matteTexture)) out.push(cmd.matteTexture);
+      if (cmd.rampTexture && !out.includes(cmd.rampTexture)) out.push(cmd.rampTexture);
       return out;
     };
 
     for (let i = 0; i < draws.length; i++) {
       const cmd = draws[i];
       const blendChange  = cmd.blend !== blendMode;
-      // A modulated and/or matted tile needs up to THREE units (source +
-      // modulator + matte) — count how many are new to this batch before
+      // Count how many texture units the tile adds to the batch before
       // deciding whether they still fit.
       const textures = tileTextures(cmd);
       let newUnits = 0;
@@ -1591,11 +1604,9 @@ export class WebGLRenderer implements Renderer {
       }
 
       for (const t of textures) if (!texUnits.has(t)) texUnits.set(t, texUnits.size);
-      const unitOf = (t: WebGLTexture | null) => (t ? texUnits.get(t)! : -1);
-
       // Try to compile this command's ops into the current batch's UBO.
       // If it overflows, flush the batch and retry with a fresh ops buffer.
-      if (!tryCompileForBatch(i, cmd, unitOf(cmd.texture), unitOf(cmd.modTexture), unitOf(cmd.matteTexture))) {
+      if (!tryCompileForBatch(i, cmd)) {
         flush(i);
         batchStart = i;
         texUnits   = new Map();
@@ -1606,7 +1617,7 @@ export class WebGLRenderer implements Renderer {
         for (const t of textures) if (!texUnits.has(t)) texUnits.set(t, texUnits.size);
         // Should always succeed on retry — a single tile can produce at most
         // MAX_OPS ops = 2·MAX_OPS vec4s, far under UBO_VEC4_CAPACITY=1024.
-        tryCompileForBatch(i, cmd, unitOf(cmd.texture), unitOf(cmd.modTexture), unitOf(cmd.matteTexture));
+        tryCompileForBatch(i, cmd);
       }
     }
 

@@ -72,8 +72,7 @@ export function createExampleGraph(name: ExampleName): Graph {
     }
     case "picodevil": {
       const background = add("text", 0, 0, { content: " picodevil " });
-      const backgroundFont = image("textStyle", 1, 0, background, { family: "BIZ UDPMincho" });
-      const smallText = image("textStyle", 2, 0, backgroundFont, { size: 48 });
+      const smallText = image("textStyle", 2, 0, background, { family: "BIZ UDPMincho", size: 48 });
       const turns = rate("slow", 2, 1, waveform("saw", 1, 1), 100);
       const tiled = image("fit", 3, 0, smallText, { mode: "tile" });
       const rotation = add("rotate", 4, 0, {}, { image: tiled, value: turns });
@@ -82,7 +81,9 @@ export function createExampleGraph(name: ExampleName): Graph {
       const pixels = image("pixelate", 5, 1, feedback, { value: 8 });
       const hue = rate("fast", 5, 2, number(4, 2, "-.01 .01"), 10);
       output(7, 1, add("hue", 6, 1, {}, { image: pixels, value: hue }));
-      const text = image("textStyle", 1, 3, add("text", 0, 3, { content: "picodevil" }), { family: "Shantell Sans" });
+      const text = image("textStyle", 1, 3, add("text", 0, 3, { content: "picodevil" }), {
+        family: "Shantell Sans", size: 500, color: { hex: "#ff0000", alpha: 1 },
+      });
       const wave = waveform("sine", 0, 4);
       const range = (column: number, row: number, source: GraphNode, min: number, max: number) =>
         add("range", column, row, { min, max }, { signal: source });
@@ -90,15 +91,13 @@ export function createExampleGraph(name: ExampleName): Graph {
       const bounce = rate("fast", 2, 4, range(1, 4, wave, -100, 100), 2);
       const weight = rate("fast", 3, 5, range(2, 5, wave, 300, 800), 1.5);
       const italics = rate("slow", 4, 4, range(3, 4, wave, 0, 1), 10);
-      const infm = add("fontAxis", 2, 3, { tag: "INFM" }, { image: text, value: informality });
-      const bnce = add("fontAxis", 3, 3, { tag: "BNCE" }, { image: infm, value: bounce });
-      const wght = add("fontAxis", 4, 3, { tag: "wght" }, { image: bnce, value: weight });
-      const ital = add("fontAxis", 5, 3, { tag: "ital" }, { image: wght, value: italics });
-      const style = image("textStyle", 6, 3, ital, { size: 500, color: "red" });
+      const handwriting = add("fontHandwriting", 3, 3, {}, { image: text, INFM: informality, BNCE: bounce });
+      const shape = add("fontShape", 4, 3, {}, { image: handwriting, wght: weight });
+      const ital = add("fontItalic", 5, 3, { mode: "blend" }, { image: shape, ital: italics });
       const x = rate("slow", 6, 4, range(5, 4, wave, 0.4, 0.6), 5);
       const cosine = waveform("cosine", 4, 5);
       const y = rate("slow", 6, 5, range(5, 5, cosine, 0.4, 0.6), 2);
-      output(8, 3, add("position", 7, 3, {}, { image: style, x, y }));
+      output(8, 3, add("position", 7, 3, {}, { image: ital, x, y }));
       break;
     }
     case "colour grids (flashing)": {

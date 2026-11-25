@@ -1,8 +1,30 @@
-import { defaultGradient, type Gradient } from "./gradient";
+import { defaultGradient, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
+import { whiteColor, type ColorValue } from "./color-value";
+import { blendModes, fitModes } from "./renderer-interface";
 
-export type ValueType = "visual" | "textLayer" | "number" | "text" | "boolean" | "gradient";
-export type Literal = string | number | boolean | Gradient;
+export type ValueType = "visual" | "textLayer" | "number" | "text" | "boolean" | "color";
+export type Literal = string | number | boolean | ColorValue | readonly RampStop[];
 export const MIN_GRAPH_ZOOM = 0.12;
+
+export interface RampStop { readonly id: string; readonly position: number }
+const defaultRampStops = [{ id: "stop-start", position: 0 }, { id: "stop-end", position: 1 }];
+const blackColor: ColorValue = { hex: "#000000", alpha: 1 };
+
+export function isRampStops(value: unknown): value is readonly RampStop[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= maxGradientStops &&
+    value.every(stop => stop && typeof stop.id === "string" && /^stop-[\w-]+$/.test(stop.id) &&
+      typeof stop.position === "number" && stop.position >= 0 && stop.position <= 1) &&
+    new Set(value.map(stop => stop.id)).size === value.length;
+}
+
+export function rampStops(node: GraphNode): readonly RampStop[] {
+  const stops = node.data.stops;
+  return isRampStops(stops) ? [...stops].sort((a, b) => a.position - b.position) : defaultRampStops;
+}
+
+export function rampInterpolation(node: GraphNode): Gradient["interpolation"] {
+  return rgbInterpolations.find(value => value === node.data.interpolation) ?? defaultGradient.interpolation;
+}
 
 export interface Socket {
   id: string;
@@ -10,8 +32,10 @@ export interface Socket {
   type: ValueType;
   acceptsTextLayer?: boolean;
   default?: Literal;
+  choices?: readonly string[];
   optional?: boolean;
   dragStep?: number;
+  unitInterval?: boolean;
 }
 
 interface NodeDefinition {
@@ -22,8 +46,10 @@ interface NodeDefinition {
   outputLabel?: string;
   extraOutputs?: readonly OutputSocket[];
   reference?: readonly string[];
+  aliases?: readonly string[];
   help?: string;
   modes?: readonly NodeMode[];
+  hidden?: boolean;
 }
 
 interface OutputSocket {
@@ -46,8 +72,11 @@ const textLayerInput: Socket = { id: "image", label: "Text", type: "textLayer" }
 const number = (id: string, label: string, value: number, dragStep?: number): Socket => ({ id, label, type: "number", default: value, dragStep });
 const boolean = (id: string, label: string, value: boolean): Socket => ({ id, label, type: "boolean", default: value });
 const text = (id: string, label: string, value: string): Socket => ({ id, label, type: "text", default: value });
-const gradientInput = (id: string): Socket => ({ id, label: "Gradient", type: "gradient", default: defaultGradient });
+const modeInput = (choices: readonly [string, ...string[]]): Socket => ({
+  ...text("mode", "Mode", choices[0]), choices,
+});
 const axis = (id: string, label: string, dragStep?: number): Socket => ({ id, label, type: "number", optional: true, dragStep });
+const unitInterval = (socket: Socket): Socket => ({ ...socket, unitInterval: true, dragStep: 0.01 });
 const axes = (x: number, y: number) => [number("x", "X", x), number("y", "Y", y)];
 const effect = (label: string, reference: string, input?: Socket): NodeDefinition => ({
   label, reference: [reference], category: "Image", inputs: input ? [imageInput, input] : [imageInput], output: "visual",
@@ -70,27 +99,84 @@ export const fontAxes = [
   { tag: "INFM", label: "Informality", value: 0 },
   { tag: "MONO", label: "Monospace", value: 1 },
   { tag: "SPAC", label: "Spacing", value: 0 },
-];
+] as const;
 
 export function fontAxisFor(tag: Literal) {
   return fontAxes.find(axis => axis.tag.toLowerCase() === String(tag).toLowerCase());
 }
 
+function fontAmount(tag: Exclude<typeof fontAxes[number]["tag"], "italic">, optional = false, dragStep?: number): Socket {
+  const { label, value } = fontAxes.find(axis => axis.tag === tag)!;
+  return optional ? axis(tag, label, dragStep) : number(tag, label, Number(value), dragStep);
+}
+
+function fontVariation(label: string, help: string, amounts: readonly Socket[], modes?: readonly NodeMode[]): NodeDefinition {
+  return {
+    label, help, category: "Text", output: "textLayer", inputs: [textLayerInput, ...amounts], modes,
+    aliases: ["Font Variation", "Font Axis", ...amounts.flatMap(({ id, label }) => [id, label, `Font ${label}`])],
+  };
+}
+
+const fontVariationNodes = {
+  fontShape: fontVariation("Font Shape", "Adjust Weight, Width, and Optical Size on fonts that support those axes. Height stretches the text vertically (1 is original height). Empty inputs keep their current values.", [
+    fontAmount("wght", true, 1), axis("scaleY", "Height"), fontAmount("wdth", true, 1), fontAmount("opsz", true),
+  ]),
+  fontItalic: fontVariation("Font Italic", "Use a switch or a numeric blend to set the italic axis in fonts such as Anybody or Shantell Sans.", [], [
+    { id: "toggle", label: "On/Off", aliases: ["Italic On/Off"], inputs: [boolean("enabled", "Italic", true)] },
+    { id: "blend", label: "Blend", aliases: ["Italic Blend", "ital"], inputs: [fontAmount("ital")] },
+  ]),
+  fontSlant: fontVariation("Font Slant", "Set the slant angle in a font such as Recursive. 0° is upright. Negative values lean right.", [
+    { ...fontAmount("slnt"), label: "Angle (°)" },
+  ]),
+  fontHandwriting: fontVariation("Font Handwriting", "Adjust Bounce, Informality, and Spacing in Shantell Sans. Empty inputs keep their current values.", [
+    fontAmount("BNCE", true), fontAmount("INFM", true), fontAmount("SPAC", true),
+  ]),
+  fontLetterforms: fontVariation("Font Letterforms", "Blend Casual, Cursive, and Monospace in Recursive from 0 to 1. Empty inputs keep their current values.", [
+    unitInterval(fontAmount("CASL", true)), unitInterval(fontAmount("CRSV", true)), unitInterval(fontAmount("MONO", true)),
+  ]),
+  fontElements: fontVariation("Font Elements", "Adjust Handjet’s Element Grid and Element Shape. Empty inputs keep their current values.", [
+    fontAmount("ELGR", true), fontAmount("ELSH", true),
+  ]),
+};
+
+export function isFontVariation(kind: NodeKind) {
+  return Object.hasOwn(fontVariationNodes, kind);
+}
+
+export function fontVariationFor(tag: string) {
+  const input = tag === "italic" ? "enabled" : tag;
+  for (const [kind, def] of Object.entries(fontVariationNodes)) {
+    if (def.inputs.some(socket => socket.id === input)) return { kind: kind as keyof typeof fontVariationNodes, input };
+    const mode = def.modes?.find(mode => mode.inputs?.some(socket => socket.id === input));
+    if (mode) return { kind: kind as keyof typeof fontVariationNodes, input, mode: mode.id };
+  }
+}
+
 export const catalog = {
   media: { label: "Media", help: "Use a single image, video, or stream from the media library.", category: "Sources", inputs: [], output: "visual" },
-  texture: { label: "Texture", help: "Choose a still image from My textures or one of the bundled Kenney packs.", category: "Sources", inputs: [], output: "visual" },
+  texture: { label: "Texture", help: "Choose an image from My textures, a texture pack, or an imported folder.", category: "Sources", inputs: [], output: "visual" },
   testCard: { label: "Test Card", help: "Generate the built-in test image to check the output and preview effects.", category: "Sources", inputs: [], output: "visual" },
-  screen: { label: "Media Pattern", reference: ["screen", "s"], category: "Sources", inputs: [text("pattern", "Pattern", "testcard")], output: "visual" },
-  color: { label: "Color", reference: ["color"], category: "Sources", inputs: [text("pattern", "Color pattern", "#ff695b")], output: "visual" },
-  colorRamp: {
-    label: "Color Ramp", category: "Sources", inputs: [gradientInput("gradient"), number("factor", "Factor", 0.5)],
-    output: "visual", outputLabel: "Color",
-    extraOutputs: [{ id: "alpha", label: "Alpha", type: "number" }, { id: "gradient", label: "Gradient", type: "gradient" }],
-    help: "Sample a gradient at Factor from 0 to 1. Color is an image with the sampled opacity, Alpha is a float, and Gradient shares the full ramp.",
+  constant: {
+    label: "Constant", category: "Sources", inputs: [],
+    modes: [
+      { id: "number", label: "Float", help: "Supply a fixed number.", inputs: [number("value", "Value", 0)] },
+      { id: "text", label: "String", help: "Supply a fixed string.", inputs: [text("value", "Value", "")] },
+      { id: "boolean", label: "Boolean", help: "Supply a fixed on/off value.", inputs: [boolean("value", "Value", false)] },
+    ],
   },
-  gradientImage: {
-    label: "Gradient Image", category: "Sources", inputs: [gradientInput("gradient")], output: "visual",
-    help: "Render the full gradient from left to right as an image. Edit it here or connect a Gradient cable.",
+  screen: { label: "Media Pattern", reference: ["screen", "s"], category: "Sources", inputs: [text("pattern", "Pattern", "testcard")], output: "visual" },
+  color: {
+    label: "Color", reference: ["color"], category: "Sources", inputs: [], output: "color",
+    help: "Pick a color with opacity, or switch to Pattern to sequence colors. Connect it to a Color input or render it as a solid image.",
+    modes: [
+      { id: "solid", label: "Solid", inputs: [{ id: "color", label: "Color", type: "color", default: { hex: "#ff695b", alpha: 1 } }] },
+      { id: "pattern", label: "Pattern", inputs: [text("pattern", "Color pattern", "#ff695b")] },
+    ],
+  },
+  colorRamp: {
+    label: "Color Ramp", category: "Image", inputs: [unitInterval(number("factor", "Factor", 0.5)), { ...imageInput, optional: true }],
+    output: "visual", outputLabel: "Image", extraOutputs: [{ id: "alpha", label: "Alpha", type: "number" }],
+    help: "Connect an image to remap its shadows and highlights with the RGB ramp. With the Image input empty, render the ramp itself. Alpha samples the ramp at Factor (0–1).",
   },
   waveform: {
     label: "Waveform", category: "Signals", inputs: [], output: "number",
@@ -161,19 +247,25 @@ export const catalog = {
   scroll: { label: "Scroll", reference: ["scroll", "scrollx", "scrolly"], category: "Layout", inputs: [imageInput, ...axes(0, 0)], output: "visual" },
   scale: { label: "Scale", reference: ["scale", "scaleX", "scaleY"], help: "Scale the image by the Uniform factor. X and Y override that factor for their respective axes.", category: "Layout", inputs: [imageInput, number("value", "Uniform", 1), axis("x", "X"), axis("y", "Y")], output: "visual" },
   rotate: { label: "Rotate", reference: ["rotateZ", "rotateX", "rotateY", "rotate"], help: "Rotate the image in turns. Z rotates in the image plane, and X and Y tilt the image.", category: "Layout", inputs: [imageInput, axis("x", "X"), axis("y", "Y"), number("value", "Z", 0)], output: "visual" },
-  fit: effect("Image Fit", "objectfit", text("mode", "Mode", "cover")),
-  blend: effect("Blend", "blend", text("mode", "Mode", "source-over")),
+  fit: effect("Image Fit", "objectfit", modeInput(fitModes)),
+  blend: {
+    label: "Blend", reference: ["blend"], category: "Image", output: "visual",
+    help: "Blend the Overlay over Image and output the result as one layer. Leave Overlay empty to blend Image over the layers already drawn.",
+    inputs: [imageInput, { ...imageInput, id: "second", label: "Overlay", optional: true }, modeInput(blendModes)],
+  },
   renderLayer: { label: "Render Layer", help: "Render the incoming image pattern into a single layer that downstream nodes can use as an image.", category: "Layout", inputs: [imageInput], output: "visual" },
-  alpha: effect("Opacity", "alpha", number("value", "Opacity", 0.8)),
-  hue: effect("Hue Rotate", "huerot", number("value", "Turns", 0.3)),
-  grey: effect("Grayscale", "grey", number("value", "Amount", 1)),
-  lumaToAlpha: {
-    label: "Luma to Alpha", reference: ["lumaToAlpha"], category: "Image", inputs: [imageInput], output: "visual",
+  alpha: {
+    ...effect("Opacity", "alpha"),
     modes: [
-      { id: "white", label: "White to Transparent", help: "Turn white into transparency and keep black. Gray becomes partially transparent black." },
-      { id: "black", label: "Black to Transparent", help: "Turn black into transparency and keep white. Gray becomes partially transparent white." },
+      { id: "uniform", label: "Uniform", inputs: [number("value", "Opacity", 0.8)] },
+      { id: "white", label: "White to Transparent", reference: ["lumaToAlpha"], aliases: ["Luma to Alpha"],
+        help: "Turn white into transparency and keep black. Gray becomes partially transparent black." },
+      { id: "black", label: "Black to Transparent", reference: ["lumaToAlpha"],
+        help: "Turn black into transparency and keep white. Gray becomes partially transparent white." },
     ],
   },
+  hue: effect("Hue Rotate", "huerot", number("value", "Turns", 0.3)),
+  grey: effect("Grayscale", "grey", number("value", "Amount", 1)),
   brightness: effect("Brightness", "brightness", number("value", "Amount", 0.2)),
   contrast: effect("Contrast", "contrast", number("value", "Amount", 1.25)),
   pixelate: effect("Pixelate", "pixelate", number("value", "Size", 8)),
@@ -183,27 +275,34 @@ export const catalog = {
   matte: { label: "Matte", reference: ["matte"], category: "Image", inputs: [imageInput, { ...imageInput, id: "texture", label: "Matte" }, number("value", "Amount", 1)], output: "visual" },
   text: {
     label: "Text", reference: ["text"], category: "Text",
-    help: "Create a text layer. Connect it to Text Style or Font Variation to change how it looks.",
+    help: "Create a text layer. Connect it to Text Style or Font Shape to change how it looks.",
     inputs: [text("content", "Content", "Hello")], output: "textLayer",
   },
   textStyle: {
     label: "Text Style", category: "Text", output: "textLayer", reference: ["font", "fontPicker", "fontSize", "fontColor"],
     help: "Set the font family, size, or color of a text layer. Empty inputs leave the existing style in place.",
     inputs: [textLayerInput, { id: "family", label: "Font", type: "text", optional: true }, axis("size", "Size"),
-      { id: "color", label: "Color", type: "text", optional: true }],
+      { id: "color", label: "Color", type: "color", optional: true }],
+  },
+  ...fontVariationNodes,
+  fontCustomAxis: {
+    ...fontVariation("Custom Font Axis", "Set any OpenType axis by its four-character tag.", [text("tag", "Axis Tag", ""), number("value", "Amount", 400)]),
+    reference: ["fontAxis"],
   },
   fontAxis: {
-    label: "Font Variation", reference: ["fontAxis"], category: "Text", output: "textLayer",
+    label: "Font Variation", reference: ["fontAxis"], category: "Text", output: "textLayer", hidden: true,
     inputs: [textLayerInput, text("tag", "Axis", "wght"), number("value", "Amount", 400), boolean("enabled", "Italic", true)],
   },
-  get: { label: "Get Variable", help: "Read a value from the Set Variable node for the same variable.", category: "Variables", inputs: [] },
-  set: { label: "Set Variable", help: "Supply the value that all Get Variable nodes for this variable read. Each variable has one Set Variable node.", category: "Variables", inputs: [] },
+  variable: {
+    label: "Variable", aliases: ["Get Variable", "Set Variable"], category: "Variables", inputs: [], outputLabel: "Get Value",
+    help: "Connect a value to set the variable. Without an input cable, the node reads the variable. Each variable can have one connected setter.",
+  },
   output: { label: "Output", help: "Send an image to the final composition. With multiple outputs, layers are drawn from the lowest number to the highest.", category: "Output", inputs: [imageInput] },
 } satisfies Record<string, NodeDefinition>;
 
 export type NodeKind = keyof typeof catalog;
 export const nodeKinds = Object.keys(catalog) as NodeKind[];
-export const valueTypes: ValueType[] = ["number", "text", "boolean", "visual", "textLayer", "gradient"];
+export const valueTypes: ValueType[] = ["number", "text", "boolean", "color", "visual", "textLayer"];
 export const fftBands = ["vol", "bass", "mid", "treble"] as const;
 export type Band = typeof fftBands[number];
 
@@ -215,7 +314,7 @@ export interface GraphNode {
   data: Record<string, Literal>;
 }
 
-export interface GraphEdge { from: string; to: string; input: string; output?: string; legacyTextInput?: true }
+export interface GraphEdge { from: string; to: string; input: string; output?: string; legacyTextInput?: true; legacyColorInput?: true }
 export interface Variable { id: string; name: string; type: ValueType }
 export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; variables: Variable[] }
 export type NodeDrop = { kind: NodeKind; data?: Record<string, Literal> };
@@ -236,16 +335,23 @@ export function definition(kind: NodeKind): NodeDefinition {
 
 export function modeFor(node: GraphNode): NodeMode | undefined {
   const modes = definition(node.kind).modes;
-  return modes?.find(mode => mode.id === node.data.mode) ?? modes?.[0];
+  const selected = node.data.mode ?? (node.kind === "color" && typeof node.data.pattern === "string" ? "pattern" : undefined);
+  return modes?.find(mode => mode.id === selected) ?? modes?.[0];
 }
 
 export function variableFor(graph: Graph, node: GraphNode): Variable | undefined {
   return graph.variables.find(variable => variable.id === node.data.variable);
 }
 
+export function isVariableSetter(graph: Graph, node: GraphNode): boolean {
+  return node.kind === "variable" && graph.edges.some(edge => edge.to === node.id && edge.input === "value");
+}
+
 export function outputType(graph: Graph, node: GraphNode, output?: string): ValueType | undefined {
   if (output !== undefined) return definition(node.kind).extraOutputs?.find(socket => socket.id === output)?.type;
-  return node.kind === "set" || node.kind === "get" ? variableFor(graph, node)?.type : definition(node.kind).output;
+  if (node.kind === "variable") return variableFor(graph, node)?.type;
+  if (node.kind === "constant") return modeFor(node)?.inputs?.[0]?.type;
+  return definition(node.kind).output;
 }
 
 export function outputsFor(graph: Graph, node: GraphNode): readonly OutputSocket[] {
@@ -255,8 +361,14 @@ export function outputsFor(graph: Graph, node: GraphNode): readonly OutputSocket
 }
 
 export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false): readonly Socket[] {
-  if (node.kind !== "set") {
+  if (node.kind !== "variable") {
     const def = definition(node.kind);
+    if (node.kind === "colorRamp") {
+      const stops = rampStops(node).map(({ id }, index): Socket => ({
+        id, label: `Color ${index + 1}`, type: "color", default: id === "stop-start" ? blackColor : whiteColor,
+      }));
+      return [...stops, ...def.inputs];
+    }
     if (node.kind === "fontAxis" && !includeInactive) {
       const choice = fontAxisFor(node.data.tag ?? "wght");
       const wiredTag = graph.edges.some(edge => edge.to === node.id && edge.input === "tag");
@@ -269,12 +381,7 @@ export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false
     return [...def.inputs, ...modeInputs];
   }
   const type = variableFor(graph, node)?.type;
-  if (type === "number") return [number("value", "Value", 0)];
-  if (type === "text") return [text("value", "Value", "")];
-  if (type === "boolean") return [boolean("value", "Value", false)];
-  if (type === "gradient") return [gradientInput("value")];
-  if (type === "textLayer") return [{ ...textLayerInput, id: "value" }];
-  return type === "visual" ? [{ ...imageInput, id: "value" }] : [];
+  return type ? [{ id: "value", label: "Set Value", type, ...(type === "visual" && { acceptsTextLayer: true }) }] : [];
 }
 
 export function isRenderable(type: ValueType | undefined) {
@@ -290,6 +397,7 @@ export function referenceNode(name: string, aliases: string[]): NodeDrop | undef
   const matches = (references?: readonly string[]) => references?.some(item => names.includes(item.toLowerCase()));
   for (const kind of nodeKinds) {
     const def = definition(kind);
+    if (def.hidden) continue;
     const mode = def.modes?.find(item => matches(item.reference));
     if (mode) return { kind, data: { mode: mode.id } };
     if (matches(def.reference)) return { kind };
@@ -305,9 +413,14 @@ export function withEdge(graph: Graph, edge: GraphEdge): Graph | undefined {
   const output = outputType(graph, from, edge.output);
   if (!output || !input || (output !== input.type &&
     !(output === "textLayer" && input.acceptsTextLayer) &&
-    !(output === "visual" && input === textLayerInput && edge.legacyTextInput))) return;
+    !(output === "color" && input.type === "visual") &&
+    !((output === "visual" || output === "color") && input === textLayerInput && edge.legacyTextInput) &&
+    !(output === "text" && input.type === "color" && to.kind === "textStyle" && edge.legacyColorInput))) return;
+  if (to.kind === "variable" && graph.nodes.some(node =>
+    node !== to && node.data.variable === to.data.variable && isVariableSetter(graph, node))) return;
   const edges = graph.edges.filter(existing => existing.to !== edge.to || existing.input !== edge.input);
   edges.push(edge);
+  const next = { ...graph, edges };
   const pending = [from.id];
   const visited = new Set<string>();
   while (pending.length) {
@@ -316,13 +429,13 @@ export function withEdge(graph: Graph, edge: GraphEdge): Graph | undefined {
     if (visited.has(id)) continue;
     visited.add(id);
     const node = graph.nodes.find(item => item.id === id);
-    if (node?.kind === "get") {
-      const setter = graph.nodes.find(item => item.kind === "set" && item.data.variable === node.data.variable);
+    if (node?.kind === "variable" && !isVariableSetter(next, node)) {
+      const setter = graph.nodes.find(item => item.data.variable === node.data.variable && isVariableSetter(next, item));
       if (setter) pending.push(setter.id);
     }
     for (const connection of edges) if (connection.to === id) pending.push(connection.from);
   }
-  return { ...graph, edges };
+  return next;
 }
 
 export function insertNodeOnEdge(graph: Graph, node: GraphNode, target: GraphEdge, inputId?: string, outputId?: string) {

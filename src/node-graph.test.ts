@@ -1,50 +1,186 @@
 import { describe, expect, it } from "vitest";
-import { inputsFor, insertNodeOnEdge, keepCompatibleEdges, makeNode, referenceNode, starterGraph, withEdge, type Graph } from "./node-graph";
+import { inputsFor, insertNodeOnEdge, isVariableSetter, keepCompatibleEdges, makeNode, outputsFor, referenceNode, starterGraph, valueTypes, withEdge, type Graph } from "./node-graph";
 import { compileLiveGraph } from "./node-runtime";
 import { initRegistry, snapshotRegistry } from "./pattern-registry";
 import { loadNodes, saveNodes } from "./node-session";
-import { defaultGradient, gradientSampler, rgbHex, type Gradient } from "./gradient";
+import { defaultGradient, gradientSampler, type Gradient } from "./gradient";
+import { rgbHex } from "./color-value";
 import { FrameRenderer } from "./renderer";
 import { createMetrics } from "./frame-metrics";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { readPixel, withRenderer } from "./webgl-test-helpers";
 
 describe("NodesDevil graph", () => {
-  it("samples Color and Alpha independently while a Gradient variable renders the full ramp", () => {
+  it.each([
+    ["blend", "blend", "screen", "add"],
+    ["fit", "objectfit", "contain", "tilecenter"],
+  ] as const)("uses stored and connected String modes for %s", (kind, property, stored, wired) => {
+    initRegistry();
+    const image = makeNode("testCard", 0, 0);
+    const effect = makeNode(kind, 0, 0, { mode: stored });
+    const string = makeNode("constant", 0, 0, { mode: "text", value: wired });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [image, effect, string, output],
+      edges: [{ from: image.id, to: effect.id, input: "image" }, { from: effect.id, to: output.id, input: "image" }],
+      variables: [],
+    };
+    const sample = (graph: Graph) => compileLiveGraph(graph).screens[0].queryArc(0.5, 0.5)[0].value[property];
+    expect(sample(graph)).toBe(stored);
+    const connected = withEdge(graph, { from: string.id, to: effect.id, input: "mode" });
+    expect(connected).toBeDefined();
+    expect(sample(connected!)).toBe(wired);
+  });
+
+  it("blends the overlay into one image without affecting other output layers", () => {
+    initRegistry();
+    const background = makeNode("color", 0, 0, { color: { hex: "#0000ff", alpha: 1 } });
+    const backgroundOutput = makeNode("output", 0, 0);
+    const base = makeNode("color", 0, 0, { color: { hex: "#ff0000", alpha: 1 } });
+    const overlay = makeNode("color", 0, 0, { color: { hex: "#ffffff", alpha: 1 } });
+    const size = makeNode("size", 0, 0, { x: 0.5 });
+    const blend = makeNode("blend", 0, 0);
+    const mode = makeNode("constant", 0, 0, { mode: "text", value: "destination-out" });
+    const opacity = makeNode("alpha", 0, 0, { value: 0.5 });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [background, backgroundOutput, base, overlay, size, blend, mode, opacity, output],
+      edges: [
+        { from: background.id, to: backgroundOutput.id, input: "image" },
+        { from: base.id, to: blend.id, input: "image" },
+        { from: overlay.id, to: size.id, input: "image" },
+        { from: blend.id, to: opacity.id, input: "image" },
+        { from: opacity.id, to: output.id, input: "image" },
+      ],
+      variables: [],
+    };
+    const layered = withEdge(graph, { from: size.id, to: blend.id, input: "second" });
+    expect(layered).toBeDefined();
+    const masked = withEdge(layered!, { from: mode.id, to: blend.id, input: "mode" });
+    expect(masked).toBeDefined();
+    withRenderer((renderer, canvas) => {
+      const pool = createVideoPoolManager({ resolveMediaUrl: name => name });
+      const frames = new FrameRenderer(renderer, pool, createMetrics());
+      const render = (graph: Graph) => {
+        const { screens, namedScreens } = compileLiveGraph(graph);
+        frames.render(screens, namedScreens, 0.5, 1, 0.5);
+      };
+      render(layered!);
+      const [overlayR, overlayG, overlayB, overlayA] = readPixel(canvas, 50, 50);
+      expect([overlayB, overlayA]).toEqual([255, 255]);
+      expect(overlayR).toBe(overlayG);
+      expect([127, 128]).toContain(overlayR);
+      render(masked!);
+      expect(readPixel(canvas, 50, 50)).toEqual([0, 0, 255, 255]);
+      const [r, g, b, a] = readPixel(canvas, 10, 50);
+      expect([g, a]).toEqual([0, 255]);
+      expect([127, 128]).toContain(r);
+      expect([127, 128]).toContain(b);
+    });
+  });
+
+  it("routes RGBA values through Color variables into text and image inputs", () => {
+    initRegistry();
+    const color = makeNode("color", 0, 0, { color: { hex: "#cc4422", alpha: 0.4 } });
+    const setter = makeNode("variable", 0, 0, { variable: "ink" });
+    const getter = makeNode("variable", 0, 0, { variable: "ink" });
+    const text = makeNode("text", 0, 0);
+    const style = makeNode("textStyle", 0, 0);
+    const textOutput = makeNode("output", 0, 0);
+    const colorOutput = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [color, setter, getter, text, style, textOutput, colorOutput],
+      variables: [{ id: "ink", name: "Ink", type: "color" }],
+      edges: [
+        { from: color.id, to: setter.id, input: "value" },
+        { from: getter.id, to: style.id, input: "color" },
+        { from: getter.id, to: colorOutput.id, input: "image" },
+        { from: text.id, to: style.id, input: "image" },
+        { from: style.id, to: textOutput.id, input: "image" },
+      ],
+    };
+    expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    const compiled = compileLiveGraph(graph);
+    expect(compiled.screens[0].queryArc(0.5, 0.5)[0].value).toMatchObject({ fontColor: "rgba(204, 68, 34, 0.4)" });
+    expect(compiled.screens[1].queryArc(0.5, 0.5)[0].value).toMatchObject({ color: "#cc4422", colorAlpha: 0.4 });
+    const previous = localStorage.getItem("nodesdevil-session-v1");
+    try {
+      const session = { draft: graph, live: graph, view: { x: 0, y: 0, zoom: 1, previews: [] }, media: [] };
+      saveNodes(session);
+      expect(loadNodes()).toEqual(session);
+    } finally {
+      if (previous === null) localStorage.removeItem("nodesdevil-session-v1");
+      else localStorage.setItem("nodesdevil-session-v1", previous);
+    }
+  });
+
+  it("restores a legacy String variable with an inline value and a cable to Text Style", () => {
+    initRegistry();
+    const set = makeNode("variable", 0, 0, { variable: "ink" });
+    const get = makeNode("variable", 0, 0, { variable: "ink" });
+    const text = makeNode("text", 0, 0);
+    const style = makeNode("textStyle", 0, 0);
+    const output = makeNode("output", 0, 0);
+    const legacyCable = { from: get.id, to: style.id, input: "color" };
+    const graph: Graph = {
+      nodes: [set, get, text, style, output],
+      variables: [{ id: "ink", name: "Ink", type: "text" }],
+      edges: [{ from: text.id, to: style.id, input: "image" }, { from: style.id, to: output.id, input: "image" }, legacyCable],
+    };
+    expect(withEdge(graph, legacyCable)).toBeUndefined();
+    const key = "nodesdevil-session-v1";
+    const previous = localStorage.getItem(key);
+    try {
+      const draft = {
+        ...graph, nodes: [{ ...set, kind: "set", data: { ...set.data, value: "red" } }, { ...get, kind: "get" }, text, style, output],
+      };
+      localStorage.setItem(key, JSON.stringify({ draft, view: { x: 0, y: 0, zoom: 1, previews: [] }, media: [] }));
+      const restored = loadNodes()!.draft;
+      expect(restored.nodes.slice(0, 2)).toEqual([set, get]);
+      const source = restored.edges.find(edge => edge.to === set.id && edge.input === "value")?.from;
+      expect(restored.nodes.find(node => node.id === source)).toMatchObject({ kind: "constant", data: { mode: "text", value: "red" } });
+      expect(restored.edges).toContainEqual({ ...legacyCable, legacyColorInput: true });
+      expect(compileLiveGraph(restored).screens[0].queryArc(0.5, 0.5)[0].value).toMatchObject({ fontColor: "red" });
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+  });
+
+  it("renders RGB stops as an image and samples their alpha at Factor", () => {
     initRegistry();
     const gradient: Gradient = { ...defaultGradient, stops: [
       { position: 0, color: "#ff0000", alpha: 0.25 },
       { position: 1, color: "#0000ff", alpha: 0.75 },
     ] };
-    const setter = makeNode("set", 0, 0, { variable: "palette", value: gradient });
-    const getter = makeNode("get", 0, 0, { variable: "palette" });
+    const color = makeNode("color", 0, 0, { color: { hex: "#0000ff", alpha: 0.75 } });
     const factor = makeNode("numberPattern", 0, 0, { pattern: "0 0.5 1" });
-    const ramp = makeNode("colorRamp", 0, 0);
-    const image = makeNode("gradientImage", 0, 0);
-    const alpha = makeNode("alpha", 0, 0, { value: 0 });
+    const ramp = makeNode("colorRamp", 0, 0, { "stop-start": { hex: "#ff0000", alpha: 0.25 } });
+    const alpha = makeNode("alpha", 0, 0);
     const output = makeNode("output", 0, 0);
     const graph: Graph = {
-      nodes: [setter, getter, factor, ramp, image, alpha, output],
-      variables: [{ id: "palette", name: "Palette", type: "gradient" }],
+      nodes: [color, factor, ramp, alpha, output],
+      variables: [],
       edges: [
-        { from: getter.id, to: ramp.id, input: "gradient" },
+        { from: color.id, to: ramp.id, input: "stop-end" },
         { from: factor.id, to: ramp.id, input: "factor" },
-        { from: ramp.id, output: "gradient", to: image.id, input: "gradient" },
-        { from: image.id, to: alpha.id, input: "image" },
+        { from: ramp.id, to: alpha.id, input: "image" },
         { from: ramp.id, output: "alpha", to: alpha.id, input: "value" },
         { from: alpha.id, to: output.id, input: "image" },
       ],
     };
     expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    expect(inputsFor(graph, ramp).map(({ id, type }) => [id, type])).toEqual([
+      ["stop-start", "color"], ["stop-end", "color"], ["factor", "number"], ["image", "visual"],
+    ]);
+    expect(outputsFor(graph, ramp).map(({ label, type }) => [label, type])).toEqual([["Image", "visual"], ["Alpha", "number"]]);
+    expect(valueTypes).not.toContain("gradient");
     expect(withEdge(graph, { from: ramp.id, output: "alpha", to: output.id, input: "image" })).toBeUndefined();
-    expect(withEdge(graph, { from: getter.id, to: output.id, input: "image" })).toBeUndefined();
-    expect(withEdge(graph, { from: ramp.id, output: "gradient", to: setter.id, input: "value" })).toBeUndefined();
+    expect(withEdge(graph, { from: factor.id, to: ramp.id, input: "stop-end" })).toBeUndefined();
     const compiled = compileLiveGraph(graph);
     expect(compiled.screens[0].queryArc(0.5, 0.5)[0].value).toMatchObject({ _type: "gradient", gradient, alpha: 0.5 });
-    const solid = withEdge(graph, { from: ramp.id, to: output.id, input: "image" })!;
-    const solidCompiled = compileLiveGraph(solid);
-    expect(solidCompiled.screens[0].queryArc(0.1, 0.1)[0].value).toMatchObject({ color: "#ff0000", colorAlpha: 0.25 });
-    expect(solidCompiled.screens[0].queryArc(0.9, 0.9)[0].value).toMatchObject({ color: "#0000ff", colorAlpha: 0.75 });
+    expect(compiled.screens[0].queryArc(0.1, 0.1)[0].value.alpha).toBe(0.25);
+    expect(compiled.screens[0].queryArc(0.9, 0.9)[0].value.alpha).toBe(0.75);
     withRenderer((renderer, canvas) => {
       const pool = createVideoPoolManager({ resolveMediaUrl: name => name });
       const frames = new FrameRenderer(renderer, pool, createMetrics());
@@ -54,26 +190,88 @@ describe("NodesDevil graph", () => {
       expect(left[0]).toBeGreaterThan(left[2]);
       expect(right[2]).toBeGreaterThan(right[0]);
       expect(left[3]).toBeLessThan(right[3]);
-      frames.render(solidCompiled.screens, solidCompiled.namedScreens, 0.5, 1, 0.5);
-      const center = readPixel(canvas, 50, 50);
-      expect(center[0]).toBe(center[2]);
-      expect(center[3]).toBeCloseTo(128, -1);
     });
 
+    color.data = { pattern: "red blue" };
+    const animated = compileLiveGraph(graph).screens[0];
+    expect(animated.queryArc(0.1, 0.1)[0].value.gradient.stops[1].color).toBe("#ff0000");
+    expect(animated.queryArc(0.9, 0.9)[0].value.gradient.stops[1].color).toBe("#0000ff");
+    expect(animated.queryArc(0.5, 0.5)[0].value.alpha).toBe(0.625);
+  });
+
+  it("maps the brightness of an image to the ramp and multiplies both alpha channels", () => {
+    initRegistry();
+    const source = makeNode("colorRamp", 0, 0, {
+      "stop-start": { hex: "#000000", alpha: 0.5 },
+      "stop-end": { hex: "#ffffff", alpha: 0.5 },
+    });
+    const ramp = makeNode("colorRamp", 0, 0, {
+      "stop-start": { hex: "#ff0000", alpha: 0.25 },
+      "stop-end": { hex: "#0000ff", alpha: 0.75 },
+      factor: 0,
+    });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = { nodes: [source, ramp, output], variables: [], edges: [
+      { from: source.id, to: ramp.id, input: "image" },
+      { from: ramp.id, to: output.id, input: "image" },
+    ] };
+    expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    const compiled = compileLiveGraph(graph);
+    withRenderer((renderer, canvas) => {
+      const pool = createVideoPoolManager({ resolveMediaUrl: name => name });
+      const frames = new FrameRenderer(renderer, pool, createMetrics());
+      frames.render(compiled.screens, compiled.namedScreens, 0.5, 1, 0.5);
+      const [darkR, darkG, darkB, darkA] = readPixel(canvas, 5, 50);
+      const [lightR, lightG, lightB, lightA] = readPixel(canvas, 95, 50);
+      expect(darkR).toBeGreaterThan(5 * darkB);
+      expect(lightB).toBeGreaterThan(5 * lightR);
+      expect(darkG + lightG).toBe(0);
+      expect(darkA).toBeGreaterThan(30);
+      expect(darkA).toBeLessThan(40);
+      expect(lightA).toBeGreaterThan(85);
+      expect(lightA).toBeLessThan(100);
+    });
+  });
+
+  it("restores saved Gradient inputs and variables as RGB ramps and images", () => {
+    initRegistry();
+    const gradient = { space: "HSV", hue: "Far", interpolation: "Constant", stops: [
+      { position: 0, color: "#ff0000", alpha: 0.25 },
+      { position: 1, color: "#0000ff", alpha: 0.75 },
+    ] };
+    const graph = {
+      nodes: [
+        { id: "set", kind: "set", x: 340, y: 0, data: { variable: "palette", value: gradient } },
+        { id: "get", kind: "get", x: 340, y: 200, data: { variable: "palette" } },
+        { id: "image", kind: "gradientImage", x: 600, y: 0, data: {} },
+        { id: "out", kind: "output", x: 900, y: 0, data: {} },
+      ],
+      variables: [{ id: "palette", name: "Palette", type: "gradient" }],
+      edges: [{ from: "get", to: "image", input: "gradient" }, { from: "image", to: "out", input: "image" }],
+    };
     const key = "nodesdevil-session-v1";
     const previous = localStorage.getItem(key);
     try {
-      saveNodes({ draft: graph, live: solid, view: { x: 0, y: 0, zoom: 1, previews: [] }, media: [] });
-      const restored = loadNodes();
-      expect(restored?.draft).toEqual(graph);
-      expect(restored?.live).toEqual(solid);
+      localStorage.setItem(key, JSON.stringify({ draft: graph, live: graph, view: { x: 0, y: 0, zoom: 1, previews: ["image"] }, media: [] }));
+      const restored = loadNodes()!;
+      expect(restored.view.previews).toEqual(["image"]);
+      expect(restored.draft.variables[0].type).toBe("visual");
+      expect(restored.draft.nodes.find(node => node.id === "image")).toMatchObject({
+        kind: "colorRamp", data: { interpolation: "Linear", "stop-0": { hex: "#ff0000", alpha: 0.25 } },
+      });
+      expect(compileLiveGraph(restored.live!).screens[0].queryArc(0, 0)[0].value).toMatchObject({
+        _type: "gradient", gradient: { interpolation: "Linear", stops: gradient.stops },
+      });
+      expect(restored.draft.edges.find(edge => edge.to === "set")?.from).toBeDefined();
+      saveNodes(restored);
+      expect(loadNodes()).toEqual(restored);
     } finally {
       if (previous === null) localStorage.removeItem(key);
       else localStorage.setItem(key, previous);
     }
   });
 
-  it("supports stepped, eased and hue-based color interpolation", () => {
+  it("supports constant steps and linear RGB interpolation", () => {
     const stops = [
       { position: 0, color: "#ff0000", alpha: 0 },
       { position: 0.5, color: "#00ff00", alpha: 0.5 },
@@ -83,18 +281,15 @@ describe("NodesDevil graph", () => {
     expect(rgbHex(stepped(0.499))).toBe("#ff0000");
     expect(rgbHex(stepped(0.5))).toBe("#00ff00");
     expect(stepped(2)[3]).toBe(1);
-    expect(gradientSampler({ ...defaultGradient, stops, interpolation: "Ease" })(0.125)[3]).toBeCloseTo(0.078125);
-    for (const space of ["HSV", "HSL"] as const) {
-      expect(rgbHex(gradientSampler({ ...defaultGradient, stops, space })(0.25))).toBe("#ffff00");
-      expect(rgbHex(gradientSampler({ ...defaultGradient, stops, space, hue: "Far" })(0.25))).toBe("#0000ff");
-    }
+    expect(gradientSampler({ ...defaultGradient, stops })(0.125)[3]).toBe(0.125);
+    expect(rgbHex(gradientSampler({ ...defaultGradient, stops })(0.25))).toBe("#808000");
   });
 
   it("converts white or black to transparency and blends gray over a background", () => {
     initRegistry();
     const background = makeNode("color", 0, 0, { pattern: "red" });
     const tones = makeNode("color", 0, 0, { pattern: "white #808080 black" });
-    const key = makeNode("lumaToAlpha", 0, 0);
+    const key = makeNode("alpha", 0, 0, { mode: "white" });
     const stack = makeNode("stack", 0, 0);
     const output = makeNode("output", 0, 0);
     const graph: Graph = {
@@ -127,6 +322,31 @@ describe("NodesDevil graph", () => {
     });
   });
 
+  it("restores standalone Luma to Alpha nodes as Opacity modes with the same cables", () => {
+    const graph = starterGraph();
+    const [source, output] = graph.nodes;
+    const legacy = { id: "luma", kind: "lumaToAlpha", x: 200, y: 96, data: { mode: "black" } };
+    const edges = [{ from: source.id, to: legacy.id, input: "image" }, { from: legacy.id, to: output.id, input: "image" }];
+    const draft = { ...graph, nodes: [source, legacy, output], edges };
+    const live = { ...draft, nodes: [source, { ...legacy, data: {} }, output] };
+    const key = "nodesdevil-session-v1";
+    const previous = localStorage.getItem(key);
+    try {
+      localStorage.setItem(key, JSON.stringify({ draft, live, view: { x: 0, y: 0, zoom: 1, previews: [legacy.id] }, media: [] }));
+      const restored = loadNodes()!;
+      expect(restored.draft.nodes[1]).toEqual({ ...legacy, kind: "alpha" });
+      expect(restored.live?.nodes[1]).toEqual({ ...legacy, kind: "alpha", data: { mode: "white" } });
+      expect(restored.draft.edges).toEqual(edges);
+      expect(restored.live?.edges).toEqual(edges);
+      expect(restored.view.previews).toEqual([legacy.id]);
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+    expect(referenceNode("lumaToAlpha", [])).toEqual({ kind: "alpha", data: { mode: "white" } });
+    expect(referenceNode("alpha", [])).toEqual({ kind: "alpha" });
+  });
+
   it("replaces the cable at an occupied input and rejects incompatible ports and cycles", () => {
     const color = makeNode("color", 0, 0);
     const signal = makeNode("waveform", 0, 0);
@@ -143,11 +363,21 @@ describe("NodesDevil graph", () => {
     expect(graph.edges[1].from).toBe(first.id);
   });
 
-  it("detects feedback through Get and Set", () => {
-    const get = makeNode("get", 0, 0, { variable: "amount" });
-    const set = makeNode("set", 0, 0, { variable: "amount" });
-    const graph: Graph = { nodes: [get, set], edges: [], variables: [{ id: "amount", name: "Amount", type: "number" }] };
+  it("detects feedback and allows only one wired setter per variable", () => {
+    const get = makeNode("variable", 0, 0, { variable: "amount" });
+    const set = makeNode("variable", 0, 0, { variable: "amount" });
+    const signal = makeNode("waveform", 0, 0);
+    const range = makeNode("range", 0, 0);
+    const graph: Graph = {
+      nodes: [get, set, signal, range], edges: [{ from: get.id, to: range.id, input: "signal" }],
+      variables: [{ id: "amount", name: "Amount", type: "number" }],
+    };
     expect(withEdge(graph, { from: get.id, to: set.id, input: "value" })).toBeUndefined();
+    expect(withEdge(graph, { from: range.id, to: set.id, input: "value" })).toBeUndefined();
+    const wired = withEdge(graph, { from: signal.id, to: set.id, input: "value" })!;
+    expect(isVariableSetter(graph, set)).toBe(false);
+    expect(isVariableSetter(wired, set)).toBe(true);
+    expect(withEdge(wired, { from: signal.id, to: get.id, input: "value" })).toBeUndefined();
   });
 
   it("inserts into one branch of a cable without changing the other connections", () => {
@@ -189,20 +419,24 @@ describe("NodesDevil graph", () => {
   it("builds a typed variable directly into a pattern and leaves the running registry in place", () => {
     initRegistry();
     const graph = starterGraph();
-    const set = makeNode("set", 0, 0, { variable: "amount", value: 0.3 });
-    const get = makeNode("get", 0, 0, { variable: "amount" });
+    const amount = makeNode("constant", 0, 0, { value: 0.3 });
+    const set = makeNode("variable", 0, 0, { variable: "amount" });
+    const get = makeNode("variable", 0, 0, { variable: "amount" });
     const opacity = makeNode("alpha", 0, 0);
     const [card, output] = graph.nodes;
-    graph.nodes.push(set, get, opacity);
+    graph.nodes.push(amount, set, get, opacity);
     graph.variables.push({ id: "amount", name: "Amount", type: "number" });
     graph.edges = [
       { from: card.id, to: opacity.id, input: "image" },
       { from: get.id, to: opacity.id, input: "value" },
       { from: opacity.id, to: output.id, input: "image" },
+      { from: amount.id, to: set.id, input: "value" },
     ];
     const previous = snapshotRegistry();
     const compiled = compileLiveGraph(graph);
     expect(compiled.screens[0].queryArc(0, 0)[0].value.alpha).toBeCloseTo(0.3);
+    expect(() => compileLiveGraph({ ...graph, edges: graph.edges.filter(edge => edge.to !== set.id) }))
+      .toThrow(/Connect an input to a Variable node/);
     expect(snapshotRegistry()).toEqual(previous);
     expect(() => compileLiveGraph({ ...graph, edges: [] })).toThrow(/connection/);
     expect(snapshotRegistry()).toEqual(previous);
@@ -258,22 +492,111 @@ describe("NodesDevil graph", () => {
   it("uses a Boolean for Italic On/Off and keeps the continuous Italic axis available", () => {
     initRegistry();
     const source = makeNode("text", 0, 0, { content: "Hello" });
-    const italic = makeNode("fontAxis", 0, 0, { tag: "italic", value: 0.25 });
-    const setter = makeNode("set", 0, 0, { variable: "toggle", value: false });
+    const italic = makeNode("fontItalic", 0, 0, { ital: 0.25 });
+    const toggle = makeNode("constant", 0, 0, { mode: "boolean", value: false });
+    const setter = makeNode("variable", 0, 0, { variable: "toggle" });
     const output = makeNode("output", 0, 0);
     let graph: Graph = {
-      nodes: [source, italic, setter, output], variables: [{ id: "toggle", name: "Italic", type: "boolean" }],
-      edges: [{ from: source.id, to: italic.id, input: "image" }, { from: italic.id, to: output.id, input: "image" }],
+      nodes: [source, italic, toggle, setter, output], variables: [{ id: "toggle", name: "Italic", type: "boolean" }],
+      edges: [
+        { from: source.id, to: italic.id, input: "image" }, { from: italic.id, to: output.id, input: "image" },
+        { from: toggle.id, to: setter.id, input: "value" },
+      ],
     };
     const sample = (item: Graph) => compileLiveGraph(item).screens[0].queryArc(0, 0)[0].value._fontVariation_ital;
     expect(inputsFor(graph, italic).find(socket => socket.id === "enabled")?.type).toBe("boolean");
     expect(sample(graph)).toBe(1);
     graph = withEdge(graph, { from: setter.id, to: italic.id, input: "enabled" })!;
     expect(sample(graph)).toBe(0);
-    const blend = { ...italic, data: { ...italic.data, tag: "ital" } };
+    const blend = { ...italic, data: { ...italic.data, mode: "blend" } };
     const blendedGraph = keepCompatibleEdges({ ...graph, nodes: graph.nodes.map(node => node === italic ? blend : node) });
     expect(blendedGraph.edges).toEqual(graph.edges);
     expect(sample(blendedGraph)).toBe(0.25);
+  });
+
+  it("applies grouped font variations to the same text and preserves unset axes", () => {
+    initRegistry();
+    const source = makeNode("text", 0, 0, { content: "Hello" });
+    const spacing = makeNode("fontCustomAxis", 0, 0, { tag: "SPAC", value: 35 });
+    const bounce = makeNode("numberPattern", 0, 0, { pattern: "<0 60>" });
+    const handwriting = makeNode("fontHandwriting", 0, 0, { INFM: 45 });
+    const shape = makeNode("fontShape", 0, 0, { wght: 700, wdth: 90, opsz: 24 });
+    const height = makeNode("numberPattern", 0, 0, { pattern: "<1.25 0.8>" });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [source, spacing, bounce, handwriting, shape, height, output], variables: [], edges: [
+        { from: source.id, to: spacing.id, input: "image" },
+        { from: spacing.id, to: handwriting.id, input: "image" },
+        { from: bounce.id, to: handwriting.id, input: "BNCE" },
+        { from: handwriting.id, to: shape.id, input: "image" },
+        { from: height.id, to: shape.id, input: "scaleY" },
+        { from: shape.id, to: output.id, input: "image" },
+      ],
+    };
+    const [pattern] = compileLiveGraph(graph).screens;
+    expect(pattern.queryArc(0, 0)[0].value).toMatchObject({
+      text: "Hello", _fontVariation_bnce: 0, _fontVariation_infm: 45, _fontVariation_spac: 35,
+      _fontVariation_wght: 700, _fontVariation_wdth: 90, _fontVariation_opsz: 24, scaleY: 1.25,
+    });
+    expect(pattern.queryArc(1, 1)[0].value).toMatchObject({ _fontVariation_bnce: 60, _fontVariation_wght: 700, scaleY: 0.8 });
+    expect(referenceNode("fontAxis", [])).toEqual({ kind: "fontCustomAxis" });
+  });
+
+  it("bounds normalized font blends for literals and signals with the original signal timing", () => {
+    initRegistry();
+    const source = makeNode("text", 0, 0);
+    const letterforms = makeNode("fontLetterforms", 0, 0, { CASL: 2 });
+    const signal = makeNode("numberPattern", 0, 0, { pattern: "-0.4 0.35 1.5" });
+    const random = makeNode("rand", 0, 0);
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = { nodes: [source, letterforms, signal, random, output], variables: [], edges: [
+      { from: source.id, to: letterforms.id, input: "image" },
+      { from: signal.id, to: letterforms.id, input: "CRSV" },
+      { from: random.id, to: letterforms.id, input: "MONO" },
+      { from: letterforms.id, to: output.id, input: "image" },
+    ] };
+    const [pattern] = compileLiveGraph(graph).screens;
+    const values = [0.1, 0.5, 0.9].map(time => pattern.queryArc(time, time)[0].value);
+    expect(values.map(value => value._fontVariation_crsv)).toEqual([0, 0.35, 1]);
+    expect(values.map(value => value._fontVariation_casl)).toEqual([1, 1, 1]);
+    expect(typeof values[0]._fontVariation_mono).toBe("number");
+    expect(new Set(values.map(value => value._fontVariation_mono)).size).toBe(1);
+  });
+
+  it("restores old font presets and custom axes with their cables and values", () => {
+    const key = "nodesdevil-session-v1";
+    const previous = localStorage.getItem(key);
+    const source = makeNode("text", 0, 0);
+    const width = makeNode("fontAxis", 120, 20, { tag: "WDTH", value: 115 });
+    const custom = makeNode("fontAxis", 240, 20, { tag: "TEST", value: 5 });
+    const signal = makeNode("numberPattern", 120, 100, { pattern: "85" });
+    const weight = { id: "weight", kind: "fontWeight", x: 360, y: 20, data: {} };
+    const monospace = { id: "mono", kind: "fontMonospace", x: 480, y: 20, data: { MONO: 0.5 } };
+    const output = makeNode("output", 600, 20);
+    const draft = { nodes: [source, width, custom, signal, weight, monospace, output], variables: [], edges: [
+      { from: source.id, to: width.id, input: "image" },
+      { from: signal.id, to: width.id, input: "value" },
+      { from: width.id, to: custom.id, input: "image" },
+      { from: custom.id, to: weight.id, input: "image" },
+      { from: signal.id, to: weight.id, input: "wght" },
+      { from: weight.id, to: monospace.id, input: "image" },
+      { from: monospace.id, to: output.id, input: "image" },
+    ] };
+    try {
+      localStorage.setItem(key, JSON.stringify({ draft, live: draft, view: { x: 0, y: 0, zoom: 1, previews: [width.id] }, media: [] }));
+      const restored = loadNodes()!;
+      expect(restored.draft.nodes[1]).toEqual({ ...width, kind: "fontShape", data: { wdth: 115 } });
+      expect(restored.draft.nodes[2]).toEqual({ ...custom, kind: "fontCustomAxis" });
+      expect(restored.draft.nodes[4]).toEqual({ ...weight, kind: "fontShape", data: { wght: 400 } });
+      expect(restored.draft.nodes[5]).toEqual({ ...monospace, kind: "fontLetterforms" });
+      expect(restored.draft.edges).toEqual(draft.edges.map(edge => edge.to === width.id && edge.input === "value"
+        ? { ...edge, input: "wdth" } : edge));
+      expect(restored.live).toEqual(restored.draft);
+      expect(restored.view.previews).toEqual([width.id]);
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
   });
 
   it("styles text layers and accepts them in visual effects while keeping images out of font nodes", () => {
@@ -282,9 +605,11 @@ describe("NodesDevil graph", () => {
     const source = makeNode("text", 0, 0);
     const style = makeNode("textStyle", 0, 0, { size: 48 });
     const scale = makeNode("scale", 0, 0, { value: 2 });
-    const content = makeNode("set", 0, 0, { variable: "message", value: "Hello world" });
+    const message = makeNode("constant", 0, 0, { mode: "text", value: "Hello world" });
+    const content = makeNode("variable", 0, 0, { variable: "message" });
     const graph: Graph = {
-      nodes: [card, output, source, style, scale, content], edges: [],
+      nodes: [card, output, source, style, scale, message, content],
+      edges: [{ from: message.id, to: content.id, input: "value" }],
       variables: [{ id: "message", name: "Message", type: "text" }],
     };
     expect(withEdge(graph, { from: card.id, to: style.id, input: "image" })).toBeUndefined();

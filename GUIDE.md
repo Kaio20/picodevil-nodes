@@ -10,6 +10,38 @@ npm install && npm run dev
 
 Open the browser to work in the node graph. Select **Code** to open the text editor. Press **Ctrl/Cmd+Enter** to run the active workspace.
 
+## Variables in the node graph
+
+Create a named, typed variable under **Variables**, then add a **Variable** node and select it. Connect a source to the input to turn the node into **Set Variable**. Other **Variable** nodes with the same selection and an empty input show **Get Variable** and read the connected value. Each variable can have one **Set Variable** node. For fixed numbers, strings, or booleans, use **Constant** under **Sources**.
+
+## Font variation in the node graph
+
+Choose a font in **Text Style**, then connect its **Text** output to **Font Shape** to adjust Weight, Width, Height, or Optical Size. Weight, Width, and Optical Size use the axes supported by the font. Height stretches text vertically, with 1 keeping the original height. Enter a value or connect a signal for each input you want to change. Empty inputs keep the current value.
+
+Connect each **Text** output to the next node to combine changes. **Font Handwriting** groups Bounce, Informality, and Spacing for Shantell Sans. **Font Letterforms** groups Casual, Cursive, and Monospace for Recursive. These three inputs clamp entered and connected values to 0–1 and drag in steps of 0.01. Use **Custom Font Axis** to enter any OpenType axis tag.
+
+## Colors in the node graph
+
+Click the color swatch in **Color**, **Text Style**, or a **Color Ramp** stop to open the picker. The wheel controls hue and saturation, the vertical slider controls brightness, and **Alpha** controls opacity. Enter `#RRGGBB` to change RGB while keeping the current alpha, or `#RRGGBBAA` to set both. The picker remembers your last eight colors across reloads.
+
+Connect a **Color** output to a **Color** input such as the one on **Text Style**, or to an **Image** input to render a solid fill. Choose **Color** as the variable type to reuse a color through **Variable** nodes. On **Text Style**, **Clear color** returns the text to its inherited color. Switch the **Color** node to **Pattern** to sequence colors.
+
+Find **Color Ramp** under **Image**. Use **+** or double-click the gradient strip to add a stop. Each stop has a **Color** input beneath the strip. Set its color with the swatch or connect a **Color** node. Drag the handles to move the stops and reorder their inputs. Choose **Linear** for smooth transitions or **Constant** for hard steps.
+
+Connect an **Image** to colorize it. Shadows use the left side of the ramp, highlights use the right, and each pixel's opacity is multiplied by the corresponding ramp opacity. Leave the **Image** input empty to output the full RGB ramp. **Alpha** gives the opacity at **Factor**, from 0 at the left edge to 1 at the right.
+
+## Projection calibration
+
+Select **Projection** to show the calibration preview and **Open Output** to open the live output window. Drag a corner to move it individually. Hold **Shift** while dragging a corner to scale the entire projection proportionally around the opposite corner. Drag anywhere along an edge to move its two corners together. Use the arrow keys on a focused corner or edge for small adjustments, hold **Shift** with the arrow keys for larger steps, or press **Escape** to cancel a drag.
+
+| Control | Effect |
+| --- | --- |
+| **Grid** | Toggles a calibration grid in the preview and output, including fullscreen. The grid follows the projection shape and starts off on page load. |
+| **Corner Radius** | Rounds the projected frame. |
+| **Reset** | Restores the full rectangular frame and clears corner rounding. |
+
+Double-click the output or press **F** inside it to toggle fullscreen.
+
 ## Case-insensitive API
 
 All function and method names are case-insensitive. `VIDEO`, `Video`, and `ViDeO` are all equivalent:

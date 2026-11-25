@@ -468,7 +468,85 @@ try {
   await resetProjection.click();
   assert.equal(await rounding.inputValue(), "0");
   assert.equal(await stage.evaluate(canvas => getComputedStyle(canvas).clipPath), "none");
-  const corner = page.getByRole("button", { name: "Top left" });
+  const projectionGrid = projectionPanel.getByRole("button", { name: "Grid", exact: true });
+  const previewGrid = projectionStage.locator(".nd-projection-grid");
+  const outputGrid = output.locator(".nd-projection-grid");
+  assert.equal(await projectionGrid.getAttribute("aria-pressed"), "false");
+  await projectionGrid.click();
+  assert.equal(await projectionGrid.getAttribute("aria-pressed"), "true");
+  await previewGrid.waitFor();
+  await outputGrid.waitFor();
+
+  const cornerPositions = () => projectionStage.locator(".nd-projection-corner").evaluateAll(handles =>
+    handles.map(handle => {
+      const { left, top } = (handle as HTMLElement).style;
+      return [Number.parseFloat(left), Number.parseFloat(top)];
+    }));
+  const frame = await projectionStage.boundingBox();
+  assert(frame);
+  const leftEdge = projectionPanel.getByRole("button", { name: "Left edge", exact: true });
+  const grab = { x: frame.x, y: frame.y + frame.height / 4 };
+  await page.mouse.move(grab.x, grab.y);
+  await page.mouse.down();
+  await page.mouse.move(grab.x + frame.width / 5, grab.y + 20, { steps: 10 });
+  await page.mouse.up();
+  const [topLeft, topRight, bottomRight, bottomLeft] = await cornerPositions();
+  assert(Math.abs(topLeft[0] - 20) < 0.5);
+  assert.deepEqual([topLeft[1], bottomLeft[1]], [0, 100]);
+  assert.equal(bottomLeft[0], topLeft[0]);
+  assert.deepEqual([topRight, bottomRight], [[100, 0], [100, 100]]);
+  assert.equal(await outputGrid.evaluate(el => (el as HTMLElement).style.transform),
+    await stage.evaluate(canvas => (canvas as HTMLCanvasElement).style.transform));
+
+  const moved = await cornerPositions();
+  const edgeCenter = await center(leftEdge);
+  await page.mouse.move(edgeCenter.x, edgeCenter.y);
+  await page.mouse.down();
+  await page.mouse.move(edgeCenter.x + 30, edgeCenter.y);
+  assert.notDeepEqual(await cornerPositions(), moved);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  assert.deepEqual(await cornerPositions(), moved);
+
+  await leftEdge.press("Shift+ArrowLeft");
+  const [keyTopLeft, , , keyBottomLeft] = await cornerPositions();
+  assert(Math.abs(keyTopLeft[0] - (topLeft[0] - 5)) < 0.01);
+  assert.equal(keyBottomLeft[0], keyTopLeft[0]);
+  const corner = page.getByRole("button", { name: "Top left", exact: true });
+  await corner.press("Shift+ArrowRight");
+  await corner.press("Shift+ArrowDown");
+  const angled = await cornerPositions();
+  const angledCenter = await center(leftEdge);
+  await drag(page, leftEdge, { x: angledCenter.x + 30, y: angledCenter.y - 5 });
+  const shifted = await cornerPositions();
+  for (const axis of [0, 1]) {
+    const delta = shifted[0][axis] - angled[0][axis];
+    assert(Math.abs(delta) > 1);
+    assert(Math.abs(delta - (shifted[3][axis] - angled[3][axis])) < 0.001);
+  }
+  assert.deepEqual(shifted.slice(1, 3), angled.slice(1, 3));
+  await rounding.fill("45");
+  assert.equal(await outputGrid.evaluate(el => (el as HTMLElement).style.clipPath),
+    await stage.evaluate(canvas => (canvas as HTMLCanvasElement).style.clipPath));
+  await resetProjection.click();
+  assert.equal(await projectionGrid.getAttribute("aria-pressed"), "true");
+  await page.keyboard.down("Shift");
+  try {
+    await drag(page, corner, { x: frame.x + frame.width / 4, y: frame.y + frame.height / 4 });
+  } finally {
+    await page.keyboard.up("Shift");
+  }
+  const scaled = await cornerPositions();
+  for (const [index, expected] of [[25, 25], [100, 25], [100, 100], [25, 100]].entries()) {
+    assert(Math.abs(scaled[index][0] - expected[0]) < 0.5);
+    assert(Math.abs(scaled[index][1] - expected[1]) < 0.5);
+  }
+  const scaledOutput = await stage.evaluate(canvas => {
+    const { width, height } = canvas.getBoundingClientRect();
+    return [width / innerWidth, height / innerHeight];
+  });
+  assert(scaledOutput.every(scale => Math.abs(scale - 0.75) < 0.005));
+  await resetProjection.click();
   await corner.press("Shift+ArrowRight");
   await corner.press("Shift+ArrowDown");
   await output.waitForFunction(() => document.querySelector("canvas")?.style.transform.includes("matrix3d"));
@@ -487,6 +565,11 @@ try {
   assert.deepEqual(outside, [0, 0, 0, 255]);
   await output.keyboard.press("f");
   await output.waitForFunction(() => document.fullscreenElement !== null);
+  assert(await outputGrid.isVisible());
+  await projectionGrid.click();
+  assert.equal(await projectionGrid.getAttribute("aria-pressed"), "false");
+  await previewGrid.waitFor({ state: "hidden" });
+  await outputGrid.waitFor({ state: "hidden" });
   await output.close();
   await projection.click();
 
@@ -563,36 +646,43 @@ try {
   await page.getByRole("button", { name: "Signal Rate · Slow", exact: true }).click();
   assert.equal(await page.locator('[data-kind="signalRate"]').last().getByRole("combobox", { name: "Mode" }).inputValue(), "slow");
 
-  const variations = page.locator('[data-kind="fontAxis"]');
-  const exampleAxis = variations.first().getByRole("combobox", { name: "Font axis" });
-  assert.equal(await exampleAxis.locator("option:checked").textContent(), "Informality");
-  const axisCables = await variations.first().locator(".nd-connected").count();
-  await exampleAxis.selectOption({ label: "Spacing" });
-  assert.equal(await exampleAxis.inputValue(), "SPAC");
-  assert.equal(await variations.first().locator(".nd-connected").count(), axisCables);
+  const handwriting = page.locator('[data-kind="fontHandwriting"]');
+  await hoverTooltip(handwriting.locator(".nd-node-title"), /Bounce, Informality, and Spacing in Shantell Sans/);
+  assert.equal(await handwriting.locator(".nd-connected").count(), 3);
+  assert.equal(await handwriting.locator('.nd-connected [data-input="BNCE"]').count(), 1);
+  assert.equal(await handwriting.locator('.nd-connected [data-input="INFM"]').count(), 1);
+  assert.equal(await handwriting.getByRole("spinbutton", { name: "Spacing" }).inputValue(), "");
+
+  const italic = page.locator('[data-kind="fontItalic"]');
+  const italicMode = italic.getByRole("combobox", { name: "Mode" });
+  assert.equal(await italicMode.inputValue(), "blend");
+  assert.equal(await italic.locator('.nd-connected [data-input="ital"]').count(), 1);
+  await italicMode.selectOption("toggle");
+  assert.equal(await italic.getByRole("checkbox", { name: "Italic" }).isChecked(), true);
+  await italicMode.selectOption("blend");
+  assert.equal(await italic.locator('.nd-connected [data-input="ital"]').count(), 1);
 
   await page.getByRole("button", { name: "Add Node" }).click();
-  await cableSearch.fill("Font Axis");
-  await page.getByRole("button", { name: "Font Variation", exact: true }).click();
-  const variation = variations.last();
-  const picker = variation.getByRole("combobox", { name: "Font axis" });
-  const amount = variation.getByRole("spinbutton", { name: "Amount" });
-  assert.equal(await amount.inputValue(), "400");
-  const height = (await variation.boundingBox())!.height;
-  await picker.selectOption({ label: "Bounce" });
-  assert.doesNotMatch(await variation.innerText(), /Shantell Sans/);
-  await hoverTooltip(picker, /^Bounce\nOpenType axis: BNCE\nUse a font like Shantell Sans\./);
-  assert.equal((await variation.boundingBox())!.height, height);
-  await picker.selectOption({ label: "Width" });
-  assert.equal(await amount.inputValue(), "100");
-  await hoverTooltip(picker, /^Width\nOpenType axis: wdth\nUse a font like /);
-  assert.doesNotMatch(await tooltip.innerText(), /Shantell Sans/);
-  await picker.selectOption({ label: "Custom tag…" });
-  const axisTag = variation.getByRole("textbox", { name: "Custom axis tag" });
-  assert.equal(await axisTag.evaluate(input => document.activeElement === input), true);
+  await cableSearch.fill("Font Width");
+  await page.getByRole("button", { name: "Font Shape", exact: true }).click();
+  const shape = page.locator('[data-kind="fontShape"]').last();
+  assert.equal(await shape.locator('[data-input="image"]').getAttribute("data-type"), "textLayer");
+  const shapeWeight = shape.getByRole("spinbutton", { name: "Weight" });
+  const shapeHeight = shape.getByRole("spinbutton", { name: "Height" });
+  assert.equal(await shapeWeight.inputValue(), "");
+  await shapeWeight.fill("650");
+  await shapeHeight.fill("1.25");
+  assert.equal(await shapeWeight.inputValue(), "650");
+  assert.equal(await shapeHeight.inputValue(), "1.25");
+  assert.equal(await shape.getByRole("spinbutton", { name: "Width" }).inputValue(), "");
+
+  await page.getByRole("button", { name: "Add Node" }).click();
+  await cableSearch.fill("Custom Font Axis");
+  await page.getByRole("button", { name: "Custom Font Axis", exact: true }).click();
+  const variation = page.locator('[data-kind="fontCustomAxis"]');
+  const axisTag = variation.getByRole("textbox", { name: "Axis Tag" });
   await axisTag.fill("TEST");
-  await axisTag.press("Tab");
-  await hoverTooltip(picker, /OpenType axis: TEST/);
+  assert.equal(await variation.getByRole("spinbutton", { name: "Amount" }).inputValue(), "400");
 
   await page.getByRole("button", { name: "Variables", exact: true }).click();
   const variables = page.locator(".nd-variables");
@@ -654,8 +744,25 @@ try {
   assert.equal(await nodeResults.locator("button:focus").count(), 1);
   await page.keyboard.press("ArrowLeft");
   assert.equal(await page.locator(".nd-menu-category:focus").count(), 1);
-  await cableSearch.fill("enabled set");
-  await page.getByRole("button", { name: "Set Enabled", exact: true }).click();
+  await cableSearch.fill("Set Variable");
+  assert.equal(await nodeResults.getByRole("button").count(), 1);
+  await nodeResults.getByRole("button", { name: "Variable", exact: true }).click();
+  const variable = page.locator('[data-kind="variable"]');
+  const variableTitle = variable.locator(".nd-node-title");
+  assert.equal(await variableTitle.innerText(), "Get Variable");
+  const variablePicker = variable.getByRole("combobox", { name: "Variable" });
+  assert.equal(await variablePicker.locator("option:checked").innerText(), "Enabled");
+  const variableInput = page.getByRole("button", { name: "Variable Set Value (boolean)", exact: true });
+  const variableOutput = page.getByRole("button", { name: "Variable Get Value output (boolean)", exact: true });
+  assert.equal(await variable.locator(".nd-port-row").filter({ has: variableInput }).innerText(), "Set Value");
+  assert.equal(await variable.locator(".nd-port-out").filter({ has: variableOutput }).innerText(), "Get Value");
+  assert.equal(await variable.getByRole("checkbox").count(), 0);
+  await variableInput.press("Enter");
+  await cableSearch.fill("Constant");
+  await nodeResults.getByRole("button", { name: "Constant · Boolean", exact: true }).click();
+  assert.equal(await variableTitle.innerText(), "Set Variable");
+  await variableInput.dispatchEvent("contextmenu");
+  assert.equal(await variableTitle.innerText(), "Get Variable");
   assert.equal(await axisTag.inputValue(), "TEST");
 
   const portColors = await page.locator(".nd-port").evaluateAll(ports => ports.map(port => {
@@ -708,14 +815,6 @@ try {
   await slant.fill("0");
   await compareFrame(upright, true);
 
-  await angleCard.getByRole("combobox", { name: "Font axis" }).selectOption({ label: "Italic On/Off" });
-  const italicToggle = angleCard.getByRole("checkbox", { name: "Italic" });
-  assert.equal(await italicToggle.isChecked(), true);
-  assert.equal(await angleCard.locator('[data-input="enabled"]').getAttribute("data-type"), "boolean");
-  await compareFrame(upright, false);
-  await italicToggle.uncheck();
-  await compareFrame(upright, true);
-
   await page.evaluate(() => {
     const key = "nodesdevil-session-v1";
     const session = JSON.parse(localStorage.getItem(key)!);
@@ -741,21 +840,21 @@ try {
     document.elementFromPoint(x, y)?.closest<HTMLElement>(".nd-node")?.dataset.kind, point);
   assert.equal(await nodeAt(overlap), "output");
   await angleHeader.click({ position: { x: 4, y: 12 } });
-  assert.equal(await nodeAt(overlap), "fontAxis");
-  assert.equal(await nodeAt(await center(outputs.locator('[data-input="image"]'))), "fontAxis");
+  assert.equal(await nodeAt(overlap), "fontSlant");
+  assert.equal(await nodeAt(await center(outputs.locator('[data-input="image"]'))), "fontSlant");
 
   await page.mouse.move(angleBounds.x + 4, headerY);
   await page.mouse.down();
   await page.mouse.move(angleBounds.x + 24, headerY, { steps: 8 });
-  assert.equal(await nodeAt(overlap), "fontAxis");
+  assert.equal(await nodeAt(overlap), "fontSlant");
   await page.mouse.up();
-  assert.equal(await nodeAt(overlap), "fontAxis");
+  assert.equal(await nodeAt(overlap), "fontSlant");
 
   await page.locator(".nd-viewport").click({ position: { x: 24, y: 24 } });
   assert.equal(await page.locator(".nd-node.is-selected").count(), 0);
-  assert.equal(await nodeAt(overlap), "fontAxis");
+  assert.equal(await nodeAt(overlap), "fontSlant");
   await angleCard.locator(".nd-preview-toggle").click();
-  assert.equal(await nodeAt(overlap), "fontAxis");
+  assert.equal(await nodeAt(overlap), "fontSlant");
 
   await recoveredOutputHeader.click({ position: { x: angleBounds.width - 4, y: 12 } });
   assert.equal(await nodeAt(overlap), "output");
@@ -842,57 +941,167 @@ try {
     const session = JSON.parse(localStorage.getItem(key)!);
     const graph = {
       nodes: [
-        { id: "ramp", kind: "colorRamp", x: 40, y: 110, data: {} },
-        { id: "gradient", kind: "gradientImage", x: 580, y: 110, data: {} },
-        { id: "output", kind: "output", x: 900, y: 110, data: {} },
-        { id: "set", kind: "set", x: 350, y: 110, data: {} },
-        { id: "get", kind: "get", x: 350, y: 260, data: {} },
+        { id: "color", kind: "color", x: 40, y: 110, data: { color: { hex: "#ff0000", alpha: 0.5 } } },
+        { id: "test-card", kind: "testCard", x: 40, y: 400, data: {} },
+        { id: "ramp", kind: "colorRamp", x: 360, y: 110, data: { interpolation: "B-Spline" } },
+        { id: "output", kind: "output", x: 720, y: 150, data: {} },
       ],
-      edges: [{ from: "gradient", to: "output", input: "image" }],
+      edges: [{ from: "ramp", to: "output", input: "image" }],
       variables: [],
     };
-    localStorage.setItem(key, JSON.stringify({ ...session, draft: graph, live: graph, view: { x: 0, y: 0, zoom: 1, previews: ["gradient"] } }));
+    localStorage.setItem(key, JSON.stringify({ ...session, draft: graph, live: graph, view: { x: 0, y: 0, zoom: 1, previews: ["ramp"] } }));
   });
   await page.reload();
   const rampCard = page.locator('[data-kind="colorRamp"]');
-  const setter = page.locator('[data-kind="set"]');
-  const getter = page.locator('[data-kind="get"]');
-  const gradientImage = page.locator('[data-kind="gradientImage"]');
-  await rampCard.getByRole("button", { name: "Add color stop" }).click();
-  const stop = rampCard.getByRole("button", { name: /^Color stop 2 at/ });
-  const start = await center(stop);
-  await drag(page, stop, { x: start.x + 36, y: start.y });
-  const position = +await rampCard.getByRole("spinbutton", { name: "Position" }).inputValue();
-  assert(position > 0.6 && position < 0.8);
-  await rampCard.getByLabel("Color", { exact: true }).fill("#ff0000");
-  await rampCard.getByRole("spinbutton", { name: "Alpha" }).fill("0.5");
-  await rampCard.getByRole("combobox", { name: "Gradient interpolation" }).selectOption("Constant");
+  const sourceColor = page.locator('[data-node-id="color"]');
+  const colorPorts = rampCard.locator('.nd-port[data-type="color"]');
+  assert.equal(await rampCard.getAttribute("data-category"), "Image");
+  assert.equal(await colorPorts.count(), 2);
+  assert.equal(await rampCard.locator('[data-input="gradient"], [data-output="gradient"]').count(), 0);
+  assert.equal(await rampCard.getByRole("combobox", { name: "Gradient color space" }).count(), 0);
+  assert.equal(await rampCard.getByRole("combobox", { name: "Active color stop" }).count(), 0);
+  assert.equal(await rampCard.getByRole("spinbutton", { name: "Position" }).count(), 0);
+  const rampInterpolation = rampCard.getByRole("combobox", { name: "Gradient interpolation" });
+  assert.deepEqual(await rampInterpolation.locator("option").allTextContents(), ["Linear", "Constant"]);
+  assert.equal(await rampInterpolation.inputValue(), "Linear");
 
-  await page.getByRole("button", { name: "Variables", exact: true }).click();
-  await variables.getByRole("textbox", { name: "Variable name" }).fill("Palette");
-  await variables.getByRole("combobox", { name: "Variable type" }).selectOption("gradient");
-  await variables.getByRole("button", { name: "Add", exact: true }).click();
+  await rampCard.getByRole("button", { name: "Add color stop" }).click();
+  assert.equal(await colorPorts.count(), 3);
+  const added = await colorPorts.nth(1).getAttribute("data-input");
+  assert(added);
+  const stopHandle = rampCard.locator(`[data-ramp-stop="${added}"]`);
+  const middlePort = rampCard.locator(`.nd-port[data-input="${added}"]`);
+  await rampCard.getByRole("button", { name: "Color 2", exact: true }).click();
+  const rampHex = rampCard.getByRole("textbox", { name: "Hex" });
+  await rampHex.fill("#00ff0080");
+  await rampHex.press("Enter");
   await page.keyboard.press("Escape");
-  for (const card of [setter, getter]) await card.getByRole("combobox", { name: "Variable" }).selectOption({ label: "Palette" });
-  assert.equal(await setter.getByRole("group", { name: "Gradient editor" }).count(), 1);
-  await drag(page, rampCard.locator('[data-output="gradient"]'), setter.locator('[data-input="value"]'));
-  await drag(page, getter.locator('[data-input=""]'), gradientImage.locator('[data-input="gradient"]'));
-  assert.equal(await wires.filter({ visible: true }).count(), 3);
-  assert.equal(await setter.getByRole("group", { name: "Gradient editor" }).count(), 0);
-  const imagePreview = gradientImage.locator(".nd-thumbnail");
+  await rampCard.getByRole("combobox", { name: "Gradient interpolation" }).selectOption("Constant");
+  const strip = rampCard.locator(".nd-gradient-track canvas");
+  assert.deepEqual(await pixel(strip, 0.75, 0), [0, 255, 0, 128]);
+  await drag(page, sourceColor.locator('.nd-port[data-input=""]'), middlePort);
+  assert.equal(await wires.filter({ visible: true }).count(), 2);
   await page.waitForFunction(() => {
-    const canvas = document.querySelector<HTMLCanvasElement>('[data-kind="gradientImage"] .nd-thumbnail')!;
-    const [r, g, b, a] = canvas.getContext("2d")!.getImageData(Math.floor(canvas.width * 0.85), Math.floor(canvas.height / 2), 1, 1).data;
-    return r > 200 && g < 20 && b < 20 && a >= 126 && a <= 129;
+    const canvas = document.querySelector<HTMLCanvasElement>('[data-kind="colorRamp"] .nd-gradient-track canvas')!;
+    return canvas.getContext("2d")!.getImageData(Math.floor(canvas.width * 0.75), 0, 1, 1).data[0] === 255;
   });
-  assert.equal((await pixel(imagePreview, 0.15, 0.5))[0], 0);
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>('[data-kind="colorRamp"] .nd-thumbnail')!;
+    const [r, g, b, a] = canvas.getContext("2d")!.getImageData(Math.floor(canvas.width * 0.75), Math.floor(canvas.height * 0.5), 1, 1).data;
+    return r >= 125 && g === 0 && b === 0 && Math.abs(a - 128) <= 1;
+  });
+
+  const imageInput = rampCard.locator('.nd-port[data-input="image"]');
+  assert.equal(await imageInput.locator("xpath=..").locator("input").count(), 0);
+  const rampImageSource = page.locator('[data-node-id="test-card"]');
+  await drag(page, rampImageSource.locator('.nd-port-out .nd-port'), imageInput);
+  assert.equal(await wires.filter({ visible: true }).count(), 3);
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>('[data-kind="colorRamp"] .nd-thumbnail')!;
+    const [r, g, b, a] = canvas.getContext("2d")!.getImageData(Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.25), 1, 1).data;
+    return r >= 125 && g === 0 && b === 0 && Math.abs(a - 128) <= 1;
+  });
+  assert.deepEqual(await pixel(strip, 0.1, 0), [0, 0, 0, 255]);
+  await imageInput.click({ button: "right" });
+  assert.equal(await wires.filter({ visible: true }).count(), 2);
+
+  const endStop = rampCard.locator('[data-ramp-stop="stop-end"]');
+  const start = await center(endStop);
+  await drag(page, endStop, { x: start.x - 145, y: start.y });
+  assert.equal(await colorPorts.nth(2).getAttribute("data-input"), added);
+  assert.equal(await wires.filter({ visible: true }).count(), 2);
   await page.reload();
-  assert.equal(await page.locator('.nd-wire-hit[data-type="gradient"]').count(), 2);
+  assert.equal(await colorPorts.nth(2).getAttribute("data-input"), added);
   assert.equal(await rampCard.getByRole("combobox", { name: "Gradient interpolation" }).inputValue(), "Constant");
-  assert.equal(await rampCard.getByRole("button", { name: `Color stop 2 at ${position}` }).count(), 1);
+  assert.equal(await wires.filter({ visible: true }).count(), 2);
+  await stopHandle.focus();
+  await rampCard.getByRole("button", { name: "Remove color stop" }).click();
+  assert.equal(await colorPorts.count(), 2);
+  assert.equal(await wires.filter({ visible: true }).count(), 1);
+  const stripBounds = (await strip.boundingBox())!;
+  await strip.dblclick({ position: { x: stripBounds.width * 0.75, y: stripBounds.height / 2 } });
+  assert.equal(await colorPorts.count(), 3);
+  assert.match(await rampCard.locator('.nd-gradient-stop[aria-pressed="true"]').getAttribute("aria-label") ?? "", /Color stop 3 at 0\.7/);
+
+  await page.evaluate(() => {
+    const key = "nodesdevil-session-v1";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    session.draft.nodes.push(
+      { id: "title", kind: "text", x: 40, y: 400, data: { content: "Color" } },
+      { id: "style", kind: "textStyle", x: 360, y: 400, data: {} },
+    );
+    session.draft.edges.push({ from: "title", to: "style", input: "image" });
+    localStorage.setItem(key, JSON.stringify(session));
+  });
+  await page.reload();
+  const style = page.locator('[data-node-id="style"]');
+  const colorSwatch = style.getByRole("button", { name: "Color", exact: true });
+  await colorSwatch.click();
+  const textColorPicker = style.getByRole("dialog", { name: "Color picker" });
+  const hex = textColorPicker.getByRole("textbox", { name: "Hex" });
+  await textColorPicker.getByRole("button", { name: "Use #00ff0080" }).click();
+  assert.equal(await hex.inputValue(), "#00ff0080");
+  const wheel = textColorPicker.getByRole("button", { name: "Color wheel" });
+  const wheelBounds = (await wheel.boundingBox())!;
+  await wheel.click({ position: { x: Math.floor(wheelBounds.width / 2), y: 8 } });
+  assert.notEqual(await hex.inputValue(), "#00ff0080");
+  assert((await hex.inputValue()).endsWith("80"));
+  const alpha = textColorPicker.getByRole("slider", { name: "Alpha" });
+  await alpha.fill("0.25");
+  await hex.fill("#24c8a9");
+  await hex.press("Enter");
+  assert.equal(await hex.inputValue(), "#24c8a940");
+  assert.equal(await alpha.inputValue(), "0.25");
+  await colorSwatch.click();
+  await textColorPicker.waitFor({ state: "hidden" });
+  await page.reload();
+  assert.equal(await colorSwatch.getAttribute("title"), "#24c8a940");
+  await colorSwatch.click();
+  await textColorPicker.getByRole("button", { name: "Clear color override" }).click();
+  assert.equal(await colorSwatch.getAttribute("title"), "Inherit color");
+  await drag(page, sourceColor.locator('.nd-port-out [data-type="color"]'), style.locator('[data-input="color"]'));
+  assert.equal(await page.locator('.nd-wire-hit[data-type="color"]').count(), 1);
+  assert.equal(await colorSwatch.count(), 0);
+
+  await page.evaluate(() => {
+    const key = "nodesdevil-session-v1";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const graph = {
+      nodes: [
+        { id: "string", kind: "constant", x: 50, y: 200, data: { mode: "text", value: "add" } },
+        { id: "overlay", kind: "testCard", x: 50, y: 390, data: {} },
+        { id: "blend", kind: "blend", x: 320, y: 130, data: { mode: "screen multiply" } },
+        { id: "fit", kind: "fit", x: 320, y: 330, data: {} },
+      ],
+      edges: [],
+      variables: [],
+    };
+    localStorage.setItem(key, JSON.stringify({ ...session, draft: graph, view: { x: 0, y: 0, zoom: 1, previews: [] } }));
+  });
+  await page.reload();
+  const blendCard = page.locator('[data-kind="blend"]');
+  const blendMode = blendCard.getByRole("combobox", { name: "Mode", exact: true });
+  const blendModePort = blendCard.locator('[data-input="mode"]');
+  const overlayPort = blendCard.locator('[data-input="second"]');
+  const fitMode = page.locator('[data-kind="fit"]').getByRole("combobox", { name: "Mode", exact: true });
+  assert.equal(await blendMode.inputValue(), "screen multiply");
+  assert.equal(await fitMode.inputValue(), "cover");
+  await blendMode.selectOption("multiply");
+  await fitMode.selectOption("tilecenter");
+  await drag(page, page.locator('[data-node-id="overlay"] .nd-port-out .nd-port'), overlayPort);
+  assert.equal(await blendCard.locator('.nd-connected [data-input="second"]').count(), 1);
+  await drag(page, page.locator('[data-node-id="string"] .nd-port-out .nd-port'), blendModePort);
+  assert.equal(await blendMode.count(), 0);
+  assert.equal(await page.locator('.nd-wire-hit[data-type="text"]').count(), 1);
+  await page.reload();
+  assert.equal(await fitMode.inputValue(), "tilecenter");
+  assert.equal(await blendMode.count(), 0);
+  assert.equal(await blendCard.locator('.nd-connected [data-input="second"]').count(), 1);
+  await blendModePort.click({ button: "right" });
+  assert.equal(await blendMode.inputValue(), "multiply");
 
   assert.deepEqual(errors, []);
-  console.log("NodesDevil browser check passed: box selection, two-column node menu and search, numeric input and cable gestures, font controls, media drag, previews, projection, persistence, examples, palette, and gradient variables.");
+  console.log("NodesDevil browser check passed: box selection, two-column node menu and search, numeric input and cable gestures, font controls, media drag, previews, projection, persistence, examples, palette, Color Ramp, Color pickers, and mode dropdowns.");
 } finally {
   await close();
 }

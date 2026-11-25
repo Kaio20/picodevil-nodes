@@ -15,9 +15,10 @@
  *   7. CONTRAST  (centred contrast)
  *   8. COLOR_OKLAB (grey + tint + huerot, one OKLab round-trip)
  *   9. LUMA_TO_ALPHA (convert the sampled color to a black or white overlay)
- *  10. MATTE     (alpha keyed off a matte texture's luminance)
- *  11. VIGNETTE  (radial alpha falloff in the cell's own frame)
- *  12. ALPHA     (final multiply; always emitted)
+ *  10. COLOR_RAMP (remap pixel brightness to an RGB lookup texture)
+ *  11. MATTE     (alpha keyed off a matte texture's luminance)
+ *  12. VIGNETTE  (radial alpha falloff in the cell's own frame)
+ *  13. ALPHA     (final multiply; always emitted)
  *
  * Op layout: every op is exactly 8 floats (2 vec4s in std140), packed:
  *   [0] kind
@@ -58,6 +59,7 @@ export const OP_VIGNETTE    = 10;
  *  multiplies alpha, so it sits with the colour ops, just before VIGNETTE. */
 export const OP_MATTE       = 11;
 export const OP_LUMA_TO_ALPHA = 12;
+export const OP_COLOR_RAMP    = 13;
 
 /** Number of floats per op (one kind + 7 args). */
 export const OP_FLOATS = 8;
@@ -66,7 +68,7 @@ export const OP_FLOATS = 8;
  *  scratch buffer that holds a single chain — compile(), the renderer's
  *  opsScratch, and the UBO-overflow retry all rely on it. SMEAR occupies the
  *  SAMPLE slot rather than adding one, so it doesn't count toward the ceiling. */
-export const MAX_OPS = 12;
+export const MAX_OPS = 13;
 
 /**
  * Inputs the compiler needs from a DrawCommand. Mirrors the fields the
@@ -82,6 +84,8 @@ export interface EffectInputs {
   contrast:     number;
   brightness:   number;
   lumaToAlpha?: LumaKey;
+  /** Texture unit of the ramp lookup, omitted when the tile has no ramp. */
+  rampTexIndex?: number;
   tintHue:      number;
   tintStrength: number;
   barrel:       number;
@@ -316,6 +320,14 @@ export function compileInto(e: EffectInputs, out: Float32Array, offset: number):
   if (e.lumaToAlpha) {
     out[i] = OP_LUMA_TO_ALPHA;
     out[i + 1] = e.lumaToAlpha === 'black' ? 1 : 0; // Overlay RGB.
+    out[i + 2] = 0; out[i + 3] = 0; out[i + 4] = 0; out[i + 5] = 0; out[i + 6] = 0; out[i + 7] = 0;
+    i += OP_FLOATS;
+    count++;
+  }
+
+  if (e.rampTexIndex !== undefined && e.rampTexIndex >= 0) {
+    out[i] = OP_COLOR_RAMP;
+    out[i + 1] = e.rampTexIndex;
     out[i + 2] = 0; out[i + 3] = 0; out[i + 4] = 0; out[i + 5] = 0; out[i + 6] = 0; out[i + 7] = 0;
     i += OP_FLOATS;
     count++;

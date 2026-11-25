@@ -74,17 +74,40 @@ function copyFrame(source: HTMLCanvasElement, target: HTMLCanvasElement, pixelWi
   ctx.drawImage(source, 0, 0, width, height);
 }
 
+function createGrid(doc: Document): HTMLDivElement {
+  const grid = doc.createElement("div");
+  grid.className = "nd-projection-grid";
+  grid.setAttribute("aria-hidden", "true");
+  grid.style.cssText = `
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    transform-origin: 0 0;
+    background-image:
+      linear-gradient(to right, #000b 1px, #fffd 1px 2px, transparent 2px),
+      linear-gradient(to bottom, #000b 1px, #fffd 1px 2px, transparent 2px);
+    background-size: 12.5% 12.5%;
+    box-shadow: inset 0 0 0 1px #fffd;
+  `;
+  return grid;
+}
+
 export class NodeProjection {
   private quad = loadQuad();
   private rounding = loadRounding();
   private panel = document.createElement("section");
   private stage = document.createElement("div");
   private preview = document.createElement("canvas");
+  private previewGrid = createGrid(document);
   private message = document.createElement("span");
+  private edges: HTMLButtonElement[] = [];
   private corners: HTMLButtonElement[] = [];
   private popup: Window | null = null;
   private outputCanvas?: HTMLCanvasElement;
+  private outputGrid?: HTMLDivElement;
   private toggleButton?: HTMLButtonElement;
+  private gridEnabled = false;
+  private dragging = false;
   private expanded = true;
   private width = loadWidth();
   private aspect = 16 / 9;
@@ -99,6 +122,18 @@ export class NodeProjection {
     const header = document.createElement("header");
     const title = document.createElement("strong");
     title.textContent = "Projection";
+    const grid = document.createElement("button");
+    grid.type = "button";
+    grid.className = "nd-button nd-projection-grid-button";
+    grid.textContent = "Grid";
+    grid.title = "Show a calibration grid in the preview and output";
+    grid.setAttribute("aria-pressed", "false");
+    grid.addEventListener("click", () => {
+      this.gridEnabled = !this.gridEnabled;
+      grid.setAttribute("aria-pressed", String(this.gridEnabled));
+      this.previewGrid.hidden = !this.gridEnabled;
+      if (this.outputGrid) this.outputGrid.hidden = !this.gridEnabled;
+    });
     const reset = document.createElement("button");
     reset.className = "nd-button";
     reset.textContent = "Reset";
@@ -122,23 +157,19 @@ export class NodeProjection {
       this.saveWidth();
     });
     this.stage.className = "nd-projection-stage";
-    this.stage.append(this.preview);
+    this.previewGrid.hidden = true;
+    this.stage.append(this.preview, this.previewGrid);
+    for (const [index, name] of ["Top edge", "Right edge", "Bottom edge", "Left edge"].entries()) {
+      const handle = this.addHandle("edge", name,
+        event => this.dragEdge(event, index),
+        (dx, dy) => this.moveEdge(this.quad, index, dx, dy));
+      this.edges.push(handle);
+    }
     for (const [index, name] of ["Top left", "Top right", "Bottom right", "Bottom left"].entries()) {
-      const handle = document.createElement("button");
-      handle.className = "nd-projection-corner";
-      handle.setAttribute("aria-label", name);
-      handle.addEventListener("pointerdown", event => this.dragCorner(event, index));
-      handle.addEventListener("keydown", event => {
-        const x = Number(event.key === "ArrowRight") - Number(event.key === "ArrowLeft");
-        const y = Number(event.key === "ArrowDown") - Number(event.key === "ArrowUp");
-        if (!x && !y) return;
-        event.preventDefault();
-        const step = event.shiftKey ? 0.05 : 0.01;
-        this.moveCorner(index, this.quad[index].x + x * step, this.quad[index].y + y * step);
-        this.save();
-      });
+      const handle = this.addHandle("corner", name,
+        event => this.dragCorner(event, index),
+        (dx, dy) => this.moveCorner(index, this.quad[index].x + dx, this.quad[index].y + dy));
       this.corners.push(handle);
-      this.stage.append(handle);
     }
     const controls = document.createElement("div");
     controls.className = "nd-projection-controls";
@@ -175,7 +206,7 @@ export class NodeProjection {
       this.layout();
     });
     roundingLabel.append(roundingInput);
-    controls.append(roundingLabel, reset);
+    controls.append(roundingLabel, grid, reset);
     header.append(title, controls, close);
     this.message.className = "nd-projection-status";
     this.message.setAttribute("role", "status");
@@ -229,8 +260,11 @@ export class NodeProjection {
     const canvas = doc.createElement("canvas");
     canvas.setAttribute("aria-label", "NodesDevil live output. Press F for fullscreen.");
     canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;transform-origin:0 0;display:block";
-    doc.body.replaceChildren(canvas);
+    const grid = createGrid(doc);
+    grid.hidden = !this.gridEnabled;
+    doc.body.replaceChildren(canvas, grid);
     this.outputCanvas = canvas;
+    this.outputGrid = grid;
     const fullscreen = () => {
       const operation = doc.fullscreenElement ? doc.exitFullscreen() : doc.documentElement.requestFullscreen();
       void operation.catch(() => { this.setExpanded(true); this.message.textContent = "Fullscreen was blocked by the browser."; });
@@ -244,6 +278,7 @@ export class NodeProjection {
       if (this.popup !== output) return;
       this.popup = null;
       this.outputCanvas = undefined;
+      this.outputGrid = undefined;
       this.message.textContent = "";
       this.changed();
     });
@@ -266,12 +301,67 @@ export class NodeProjection {
     }
   }
 
+  private addHandle(kind: "edge" | "corner", name: string, drag: (event: PointerEvent) => void, nudge: (dx: number, dy: number) => void) {
+    const handle = document.createElement("button");
+    handle.type = "button";
+    handle.className = `nd-projection-${kind}`;
+    handle.setAttribute("aria-label", name);
+    handle.addEventListener("pointerdown", drag);
+    handle.addEventListener("keydown", event => {
+      const x = Number(event.key === "ArrowRight") - Number(event.key === "ArrowLeft");
+      const y = Number(event.key === "ArrowDown") - Number(event.key === "ArrowUp");
+      if (!x && !y) return;
+      event.preventDefault();
+      if (this.dragging) return;
+      const step = event.shiftKey ? 0.05 : 0.01;
+      nudge(x * step, y * step);
+      this.save();
+    });
+    this.stage.append(handle);
+    return handle;
+  }
+
   private dragCorner(event: PointerEvent, index: number) {
+    const { width, height } = this.stage.getBoundingClientRect();
+    let reference = this.quad;
+    let start = event;
+    let previous = event;
+    this.dragQuad(event, move => {
+      if (move.shiftKey !== previous.shiftKey) {
+        reference = this.quad;
+        start = previous;
+      }
+      previous = move;
+      const dx = move.clientX - start.clientX;
+      const dy = move.clientY - start.clientY;
+      const corner = reference[index];
+      if (!move.shiftKey) {
+        this.moveCorner(index, corner.x + dx / width, corner.y + dy / height);
+        return;
+      }
+
+      const pivot = reference[(index + 2) % 4];
+      // Project pointer movement onto the corner's diagonal in screen pixels.
+      const diagonalX = (corner.x - pivot.x) * width;
+      const diagonalY = (corner.y - pivot.y) * height;
+      const change = Math.max(-1, (dx * diagonalX + dy * diagonalY) / (diagonalX ** 2 + diagonalY ** 2));
+      this.adjustQuad(amount => reference.map(point => ({
+        x: point.x + (point.x - pivot.x) * change * amount,
+        y: point.y + (point.y - pivot.y) * change * amount,
+      })) as Quad);
+    });
+  }
+
+  private dragEdge(event: PointerEvent, index: number) {
+    const { width, height } = this.stage.getBoundingClientRect();
+    this.dragQuad(event, (move, original) => {
+      this.moveEdge(original, index, (move.clientX - event.clientX) / width, (move.clientY - event.clientY) / height);
+    });
+  }
+
+  private dragQuad(event: PointerEvent, move: (event: PointerEvent, original: Quad) => void) {
     const original = this.quad;
-    this.trackDrag(event, move => {
-      const rect = this.stage.getBoundingClientRect();
-      this.moveCorner(index, (move.clientX - rect.left) / rect.width, (move.clientY - rect.top) / rect.height);
-    }, commit => {
+    this.trackDrag(event, pointer => move(pointer, original), commit => {
       if (commit) this.save();
       else { this.quad = original; this.layout(); }
     });
@@ -292,22 +382,24 @@ export class NodeProjection {
   }
 
   private trackDrag(event: PointerEvent, move: (event: PointerEvent) => void, finish: (commit: boolean) => void) {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || this.dragging) return;
     event.preventDefault();
     const handle = event.currentTarget as HTMLButtonElement;
     handle.focus();
     handle.setPointerCapture(event.pointerId);
+    this.dragging = true;
     const controller = new AbortController();
     const { signal } = controller;
     const end = (commit: boolean) => {
       controller.abort();
+      this.dragging = false;
       if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
       finish(commit);
     };
-    handle.addEventListener("pointermove", move, { signal });
-    handle.addEventListener("pointerup", () => end(true), { signal });
-    handle.addEventListener("pointercancel", () => end(false), { signal });
-    handle.addEventListener("lostpointercapture", () => end(false), { signal });
+    handle.addEventListener("pointermove", pointer => { if (pointer.pointerId === event.pointerId) move(pointer); }, { signal });
+    handle.addEventListener("pointerup", pointer => { if (pointer.pointerId === event.pointerId) end(true); }, { signal });
+    handle.addEventListener("pointercancel", pointer => { if (pointer.pointerId === event.pointerId) end(false); }, { signal });
+    handle.addEventListener("lostpointercapture", pointer => { if (pointer.pointerId === event.pointerId) end(false); }, { signal });
     document.addEventListener("keydown", key => { if (key.key === "Escape") end(false); }, { signal });
   }
 
@@ -319,27 +411,66 @@ export class NodeProjection {
     this.layout();
   }
 
+  private moveEdge(original: Quad, index: number, dx: number, dy: number) {
+    const end = (index + 1) % 4;
+    const a = original[index], b = original[end];
+    dx = Math.max(-Math.min(a.x, b.x), Math.min(1 - Math.max(a.x, b.x), dx));
+    dy = Math.max(-Math.min(a.y, b.y), Math.min(1 - Math.max(a.y, b.y), dy));
+    this.adjustQuad(amount => {
+      const next = [...original] as Quad;
+      next[index] = { x: a.x + dx * amount, y: a.y + dy * amount };
+      next[end] = { x: b.x + dx * amount, y: b.y + dy * amount };
+      return next;
+    });
+  }
+
+  private adjustQuad(at: (amount: number) => Quad) {
+    let next = at(1);
+    if (!validQuad(next)) {
+      // Stop at the last valid position along the drag even if the pointer overshoots.
+      let low = 0, high = 1;
+      for (let step = 0; step < 16; step++) {
+        const mid = (low + high) / 2;
+        if (validQuad(at(mid))) low = mid;
+        else high = mid;
+      }
+      next = at(low);
+    }
+    this.quad = next;
+    this.layout();
+  }
+
   private layout() {
     const rect = this.stage.getBoundingClientRect();
     this.previewSize = { width: rect.width, height: rect.height };
-    if (rect.width > 0 && rect.height > 0) this.layoutCanvas(this.preview, rect.width, rect.height);
+    if (rect.width > 0 && rect.height > 0) this.layoutSurface(this.preview, this.previewGrid, rect.width, rect.height);
     this.quad.forEach(({ x, y }, index) => {
       this.corners[index].style.left = `${x * 100}%`;
       this.corners[index].style.top = `${y * 100}%`;
+      const end = this.quad[(index + 1) % 4];
+      const dx = (end.x - x) * rect.width;
+      const dy = (end.y - y) * rect.height;
+      const edge = this.edges[index];
+      edge.style.left = `${x * 100}%`;
+      edge.style.top = `${y * 100}%`;
+      edge.style.width = `${Math.hypot(dx, dy)}px`;
+      edge.style.transform = `translateY(-50%) rotate(${Math.atan2(dy, dx)}rad)`;
     });
     const output = this.outputWindow;
-    if (output && this.outputCanvas) this.layoutCanvas(this.outputCanvas, Math.max(1, output.innerWidth), Math.max(1, output.innerHeight));
+    if (output && this.outputCanvas && this.outputGrid) {
+      this.layoutSurface(this.outputCanvas, this.outputGrid, Math.max(1, output.innerWidth), Math.max(1, output.innerHeight));
+    }
   }
 
-  private layoutCanvas(canvas: HTMLCanvasElement, width: number, height: number) {
-    canvas.style.transform = quadTransform(this.quad, width, height);
+  private layoutSurface(canvas: HTMLCanvasElement, grid: HTMLDivElement, width: number, height: number) {
+    canvas.style.transform = grid.style.transform = quadTransform(this.quad, width, height);
     const amount = this.rounding / 100;
     const shortSide = Math.min(width, height);
     // Crop the longer side towards a square so full rounding yields a circle.
     const insetX = (width - shortSide) * amount / 2;
     const insetY = (height - shortSide) * amount / 2;
     const radius = shortSide * amount / 2;
-    canvas.style.clipPath = amount ? `inset(${insetY}px ${insetX}px round ${radius}px)` : "";
+    canvas.style.clipPath = grid.style.clipPath = amount ? `inset(${insetY}px ${insetX}px round ${radius}px)` : "";
   }
 
   private save() {

@@ -615,15 +615,19 @@ body {
 
 .texture-controls {
   display: flex;
-  flex-wrap: wrap;
   gap: 4px;
   padding: 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .texture-controls select {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
+}
+
+.texture-controls button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 #tab-textures .thumbs-grid {

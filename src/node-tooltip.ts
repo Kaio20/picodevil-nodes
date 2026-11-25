@@ -35,6 +35,7 @@ export function setupNodeTooltip(host: HTMLElement) {
       else trigger.setAttribute("aria-describedby", previousDescription);
     }
     tooltip.hidden = true;
+    if (tooltip.parentElement !== host) host.append(tooltip);
     trigger = pointer = undefined;
   }
 
@@ -56,6 +57,7 @@ export function setupNodeTooltip(host: HTMLElement) {
     heading.textContent = label;
     description.textContent = details.join("\n");
     if (tooltip.hidden) {
+      trigger.closest(".nd-catalog-menu[popover]")?.append(tooltip);
       previousDescription = trigger.getAttribute("aria-describedby");
       tooltip.hidden = false;
       trigger.setAttribute("aria-describedby", previousDescription ? `${previousDescription} ${tooltipId}` : tooltipId);

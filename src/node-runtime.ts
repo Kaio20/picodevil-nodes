@@ -16,8 +16,10 @@ import { WebGLRenderer } from "./webgl-renderer";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { hashStr, withLayoutCounter } from "./layout-counter";
 import { collectScreens, getNamedScreenIndices, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
-import { fftBands, inputsFor, isRenderable, modeFor, previewType, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
-import { gradientPixels, gradientResolution, gradientSampler, isGradient, rgbHex, type Gradient } from "./gradient";
+import { fftBands, inputsFor, isFontVariation, isRenderable, isVariableSetter, modeFor, outputType, previewType, rampInterpolation, rampStops, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
+import { gradientSampler, type Gradient } from "./gradient";
+import { colorRamp } from "./effects-controls";
+import { clampUnit, colorCss, colorFromCss, isColorValue, whiteColor, type ColorValue } from "./color-value";
 import "./index-patterns";
 import "./shuffle-stack";
 
@@ -42,6 +44,17 @@ type Value = Pattern | Literal;
 type PreviewValue = { layer: string } | { value: Value } | { error: string };
 const sceneSource = /(?:^|[\s<\[,(])(?:all|prev)(?=$|[\s>\],):*?!/@])/;
 const waveforms: Record<string, Pattern> = { sine, cosine, saw, tri };
+const rampPreview = "rampPreview";
+
+function solidImage(value: Value): Pattern {
+  return reify(value).fmap(({ hex, alpha }: ColorValue) => ({ _type: "color", color: hex, colorAlpha: alpha }));
+}
+
+function renderLayer(id: string, image: Pattern): Pattern {
+  const name = `__auto_layer_${id}`;
+  registerAutoHidden(name, image);
+  return pure({ _type: "pattern", src: name });
+}
 
 function bounded(value: Value, max: number): Pattern {
   return reify(value).fmap((item: unknown) => Math.max(1, Math.min(max, Math.round(Number(item)) || 1)));
@@ -52,7 +65,7 @@ function buildValues(graph: Graph, preview: boolean) {
   const visiting = new Set<string>();
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const incoming = new Map(graph.edges.map(edge => [edge.to + ":" + edge.input, edge]));
-  const setters = new Map(graph.nodes.filter(node => node.kind === "set").map(node => [node.data.variable, node]));
+  const setters = new Map(graph.nodes.filter(node => isVariableSetter(graph, node)).map(node => [node.data.variable, node]));
   const read = (id: string, output?: string): Value => {
     const key = JSON.stringify([id, output]);
     const cached = values.get(key);
@@ -63,9 +76,19 @@ function buildValues(graph: Graph, preview: boolean) {
     visiting.add(id);
     try {
       const inputs = Object.fromEntries(inputsFor(graph, node).flatMap(socket => {
+        if (node.kind === "colorRamp" && socket.id === "factor" && output !== "alpha") return [];
+        if (node.kind === "colorRamp" && socket.id === "image" && output !== undefined) return [];
         const source = incoming.get(node.id + ":" + socket.id);
-        const value = source ? read(source.from, source.output) : node.data[socket.id] ?? socket.default;
-        if (value !== undefined) return [[socket.id, value] as const];
+        if (node.kind === "variable" && !source) return [];
+        let value = source ? read(source.from, source.output) : node.data[socket.id] ?? socket.default;
+        if (source && (socket.type === "visual" || source.legacyTextInput) && outputType(graph, nodes.get(source.from)!, source.output) === "color") {
+          value = solidImage(value!);
+        }
+        if (value !== undefined) {
+          // withValue preserves per-event sampling for random signal sources.
+          if (socket.unitInterval) value = reify(value).withValue((item: unknown) => clampUnit(Number(item)));
+          return [[socket.id, value] as const];
+        }
         if (socket.optional) return [];
         throw new Error(`${socket.label} needs a connection.`);
       }));
@@ -82,6 +105,16 @@ function buildNode(
   setters: Map<Literal, GraphNode>, read: (id: string) => Value, output?: string,
 ): Value {
   const image = input.image as Pattern;
+  if (isFontVariation(node.kind)) {
+    let styled = image;
+    for (const [tag, value] of Object.entries(input)) {
+      if (tag === "image") continue;
+      if (tag === "scaleY") styled = call(styled, "scaleY", value);
+      else if (tag === "enabled") styled = call(styled, "fontAxis", "ital", reify(value).fmap(Number));
+      else styled = call(styled, "fontAxis", tag, value);
+    }
+    return styled;
+  }
   const mode = modeFor(node)?.id;
   switch (node.kind) {
     case "media":
@@ -101,24 +134,55 @@ function buildNode(
       });
     }
     case "testCard": return makeTestCard();
+    case "constant": return input.value;
     case "screen": {
       const expression = String(input.pattern);
       if (preview && sceneSource.test(expression)) throw new Error("This source uses the full scene. Run to see it in Output.");
       return s(expression) as Pattern;
     }
-    case "color": return color(String(input.pattern)) as Pattern;
-    case "colorRamp": {
-      if (!isGradient(input.gradient)) throw new Error("Choose a valid gradient.");
-      if (output === "gradient") return input.gradient;
-      const sample = gradientSampler(input.gradient);
-      return reify(input.factor).fmap((factor: unknown) => {
-        const rgba = sample(Number(factor));
-        return output === "alpha" ? rgba[3] : { _type: "color", color: rgbHex(rgba), colorAlpha: rgba[3] };
+    case "color": {
+      if (mode !== "pattern") return input.color;
+      const palette = new Map<string, ColorValue>();
+      const pattern = typeof input.pattern === "string" ? mini(input.pattern) : reify(input.pattern);
+      return pattern.fmap((value: unknown) => {
+        const name = String(value);
+        const color = palette.get(name) ?? colorFromCss(name) ?? whiteColor;
+        palette.set(name, color);
+        return color;
       });
     }
-    case "gradientImage": {
-      if (!isGradient(input.gradient)) throw new Error("Choose a valid gradient.");
-      return pure({ _type: "gradient", gradient: input.gradient });
+    case "colorRamp": {
+      const stops = rampStops(node);
+      const interpolation = rampInterpolation(node);
+      let palette = pure([] as ColorValue[]);
+      for (const { id } of stops) {
+        const value = input[id];
+        if (value instanceof Pattern) {
+          palette = palette.fmap((colors: ColorValue[]) => (color: ColorValue) => [...colors, color]).appBoth(value);
+        } else {
+          if (!isColorValue(value)) throw new Error("Choose a valid color.");
+          palette = palette.fmap((colors: ColorValue[]) => [...colors, value]);
+        }
+      }
+      let previous: Gradient | undefined;
+      const ramp = palette.fmap((colors: ColorValue[]): Gradient => {
+        if (previous?.stops.every((stop, index) => stop.color === colors[index].hex && stop.alpha === colors[index].alpha)) return previous;
+        previous = { interpolation, stops: stops.map(({ position }, index) => ({
+          position, color: colors[index].hex, alpha: colors[index].alpha,
+        })) };
+        return previous;
+      });
+      if (output !== "alpha") {
+        if (image) return call(colorRamp(ramp, image), "render");
+        return ramp.fmap((gradient: Gradient) => ({ _type: "gradient", gradient }));
+      }
+      let sampled: Gradient | undefined;
+      let sample: ReturnType<typeof gradientSampler>;
+      return ramp.fmap((gradient: Gradient) => {
+        if (sampled !== gradient) { sample = gradientSampler(gradient); sampled = gradient; }
+        const current = sample;
+        return (factor: number) => current(factor)[3];
+      }).appBoth(reify(input.factor));
     }
     case "waveform": return waveforms[mode ?? "sine"];
     case "rand": return rand;
@@ -168,16 +232,17 @@ function buildNode(
       return rotated;
     }
     case "fit": return call(image, "objectfit", input.mode);
-    case "blend": return call(image, "blend", input.mode);
-    case "renderLayer": {
-      const name = `__auto_layer_${node.id}`;
-      registerAutoHidden(name, image);
-      return pure({ _type: "pattern", src: name });
+    case "blend": {
+      if (input.second === undefined) return call(image, "blend", input.mode);
+      const overlay = call(input.second as Pattern, "blend", input.mode);
+      return renderLayer(node.id, stack(image, overlay));
     }
-    case "alpha": return call(image, "alpha", input.value);
+    case "renderLayer": return renderLayer(node.id, image);
+    case "alpha":
+      if (mode === "white" || mode === "black") return call(image, "lumaToAlpha", mode);
+      return call(image, "alpha", input.value);
     case "hue": return call(image, "huerot", input.value);
     case "grey": return call(image, "grey", input.value);
-    case "lumaToAlpha": return call(image, "lumaToAlpha", mode);
     case "brightness": return call(image, "brightness", input.value);
     case "contrast": return call(image, "contrast", input.value);
     case "pixelate": return call(image, "pixelate", input.value);
@@ -190,53 +255,59 @@ function buildNode(
       let styled = image;
       if (input.family !== undefined) styled = call(styled, "font", input.family);
       if (input.size !== undefined) styled = call(styled, "fontSize", input.size);
-      if (input.color !== undefined) styled = call(styled, "fontColor", input.color);
+      if (input.color !== undefined) styled = call(styled, "fontColor", reify(input.color).fmap((value: unknown) =>
+        isColorValue(value) ? colorCss(value) : value));
       return styled;
     }
-    case "fontAxis": {
+    case "fontAxis":
+    case "fontCustomAxis": {
       if (input.enabled !== undefined) return call(image, "fontAxis", "ital", reify(input.enabled).fmap(Number));
       return input.tag === "" ? image : call(image, "fontAxis", input.tag, input.value);
     }
-    case "set":
-      if (!variableFor(graph, node)) throw new Error("Choose a variable.");
-      if (setters.get(node.data.variable)?.id !== node.id) throw new Error("Use one Set node per variable.");
-      return input.value;
-    case "get": {
+    case "variable": {
       if (!variableFor(graph, node)) throw new Error("Choose a variable.");
       const setter = setters.get(node.data.variable);
-      if (!setter) throw new Error("Add a Set node for this variable.");
+      if (input.value !== undefined) {
+        if (setter !== node) throw new Error("Use one Set node per variable.");
+        return input.value;
+      }
+      if (!setter) throw new Error("Connect an input to a Variable node for this variable.");
       return read(setter.id);
     }
     case "output": return image;
   }
 }
 
-function compile(graph: Graph, previewIds?: readonly string[]) {
+function previewKey(target: PreviewTarget) { return JSON.stringify([target.id, Boolean(target.showRamp)]); }
+
+function compile(graph: Graph, targets?: readonly PreviewTarget[]) {
   const previous = snapshotRegistry();
   resetRegistry();
   try {
     const previews = new Map<string, PreviewValue>();
-    const read = buildValues(graph, previewIds !== undefined);
+    const read = buildValues(graph, targets !== undefined);
     const outputs = graph.nodes.filter(node => node.kind === "output");
     let tempo: Value = CYCLES_PER_SECOND * 60;
     const tempoNode = graph.nodes.filter(node => node.kind === "tempo").at(-1);
     if (tempoNode) {
       try { tempo = read(tempoNode.id); }
-      catch (error) { if (!previewIds) throw error; }
+      catch (error) { if (!targets) throw error; }
     }
-    if (previewIds) {
-      for (const id of previewIds) {
+    if (targets) {
+      for (const target of targets) {
+        const { id } = target;
+        const key = previewKey(target);
         const node = graph.nodes.find(item => item.id === id);
         if (!node) continue;
         try {
-          const value = read(id);
-          if (isRenderable(previewType(graph, node))) {
+          const value = read(id, target.showRamp ? rampPreview : undefined);
+          if (!target.showRamp && isRenderable(previewType(graph, node))) {
             const layer = `__auto_preview_${id}`;
             registerAutoHidden(layer, value as Pattern);
-            previews.set(id, { layer });
-          } else previews.set(id, { value });
+            previews.set(key, { layer });
+          } else previews.set(key, { value });
         } catch (error) {
-          previews.set(id, { error: error instanceof Error ? error.message : String(error) });
+          previews.set(key, { error: error instanceof Error ? error.message : String(error) });
         }
       }
     } else {
@@ -258,6 +329,8 @@ export interface PreviewTarget {
   status: HTMLElement;
   samples: number[];
   gradient?: Gradient;
+  showRamp?: (gradient?: Gradient) => void;
+  color?: string;
 }
 
 export class NodePreviews {
@@ -289,14 +362,14 @@ export class NodePreviews {
     const start = this.nextBatch % targets.length;
     const batch = [...targets.slice(start), ...targets.slice(0, start)].slice(0, 4);
     this.nextBatch = start + (targets.length > 4 ? 4 : 1);
-    const signature = batch.map(target => target.id).join(",");
+    const signature = batch.map(previewKey).join(",");
     if (!this.clock) {
       this.clock = new CpsController(CYCLES_PER_SECOND, now);
       this.clock.restore({ ...this.clock.snapshot(), startMs: now - cycle / CYCLES_PER_SECOND * 1000, accumulatedCycle: cycle });
       this.result = undefined;
     }
     if (!this.result || this.graph !== graph || this.signature !== signature) {
-      const result = compile(graph, batch.map(target => target.id));
+      const result = compile(graph, batch);
       if (this.graph !== graph || !this.result) this.clock.setCpm(result.tempo, now);
       this.graph = graph;
       this.signature = signature;
@@ -314,7 +387,7 @@ export class NodePreviews {
         this.prepareRenderer(ratio);
         if (!this.renderer?.isContextLost()) this.frameRenderer?.render(result.screens, result.namedScreens, time.t, time.cps, time.cycle, now);
       }
-      for (const target of batch) this.drawTarget(target, result.previews.get(target.id), time.t);
+      for (const target of batch) this.drawTarget(target, result.previews.get(previewKey(target)), time.t);
     } catch (error) {
       for (const target of batch) target.status.textContent = error instanceof Error ? error.message : String(error);
     } finally {
@@ -351,7 +424,12 @@ export class NodePreviews {
 
   private drawTarget(target: PreviewTarget, preview: PreviewValue | undefined, cycle: number) {
     if (!preview) return;
-    if ("error" in preview) { target.status.textContent = preview.error; return; }
+    if ("error" in preview) {
+      if (target.gradient) target.showRamp?.();
+      target.gradient = undefined;
+      target.status.textContent = preview.error;
+      return;
+    }
     if ("layer" in preview) {
       if (this.unavailable) { target.status.textContent = "Image preview unavailable."; return; }
       if (!this.canvas || !target.canvas || this.renderer?.isContextLost() || !this.renderer?.presentLayer(preview.layer)) return;
@@ -367,11 +445,24 @@ export class NodePreviews {
     }
     const dynamic = preview.value instanceof Pattern;
     const value = dynamic ? (preview.value as Pattern).queryArc(cycle, cycle)[0]?.value : preview.value;
-    if (isGradient(value) && target.canvas) {
-      if (target.gradient !== value) {
-        const pixels = gradientPixels(value, gradientResolution);
-        target.canvas.getContext("2d")!.putImageData(new ImageData(pixels, gradientResolution, 1), 0, 0);
-        target.gradient = value;
+    if (isColorValue(value) && target.canvas) {
+      const color = colorCss(value);
+      if (target.color !== color) {
+        const context = target.canvas.getContext("2d")!;
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+        target.color = color;
+      }
+      target.canvas.hidden = false;
+      target.status.textContent = "";
+      return;
+    }
+    if (target.showRamp) {
+      const gradient: Gradient | undefined = value?.gradient;
+      if (target.gradient !== gradient) {
+        target.showRamp(gradient);
+        target.gradient = gradient;
       }
       target.status.textContent = "";
       return;
@@ -381,6 +472,7 @@ export class NodePreviews {
     const g = target.canvas.getContext("2d")!;
     const { width, height } = target.canvas;
     g.clearRect(0, 0, width, height);
+    target.color = undefined;
     const chart = dynamic && typeof value === "number" && Number.isFinite(value);
     target.canvas.hidden = !chart;
     if (!chart) { target.samples.length = 0; return; }

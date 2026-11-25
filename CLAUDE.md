@@ -72,6 +72,10 @@ The Node server lives in a sibling repo at [`../server/`](../server/) — see [`
 
 ## How the frontend works
 
+The Projection panel and its live output window are implemented in `src/node-projection.ts`. They share the corner and edge calibration, corner rounding, and the optional calibration grid. Shift-dragging a corner scales the projection around the opposite corner.
+
+The node graph's Color type carries sRGB and alpha. Color inputs and gradient stops share the picker in `src/node-color-input.ts`. Image inputs render connected Color values as solid fills.
+
 1. `src/main.ts` maintains a `screens` array collected from `.p()` registrations each eval cycle.
 2. The transpiler converts `$: expr` lines into `expr.p("$")` calls, and wraps double-quoted strings in `mini()`.
 3. The render loop runs at requestAnimationFrame rate. Each frame it:

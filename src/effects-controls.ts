@@ -151,6 +151,7 @@ PatternProto.bright = PatternProto.brightness; // alias, like gray → grey
  * $: s('clip.mp4').lumaToAlpha('white')
  */
 export const lumaToAlpha = createMixParam("lumaToAlpha");
+export const colorRamp = createMixParam("colorRamp");
 
 const _tintHue      = createMixParam("tintHue");
 const _tintStrength = createMixParam("tintStrength");

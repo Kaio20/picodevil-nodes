@@ -1,23 +1,46 @@
 import { getAllEntries } from "./media-registry";
 import { attachNodeDrag } from "./node-sidebar-drag";
-import { texturePacks, useBundledTexture } from "./texture-library";
+import { resolveUrl } from "./server-config";
+import { getTexturePacks, importTextureFolder, useCatalogTexture } from "./texture-library";
 import { insertName, makeThumbCell } from "./thumbs";
 
-export function makeTextureCatalog(onChange: () => void) {
+export function makeTextureCatalog(onChange: () => void, showToast: (message: string) => void) {
   const controls = document.createElement("div");
   controls.className = "texture-controls";
 
   const source = document.createElement("select");
   source.className = "pd-input";
   source.setAttribute("aria-label", "Texture collection");
-  source.append(new Option("My textures", ""));
-  for (const { id, label } of texturePacks) source.append(new Option(label, id));
+  function showOptions(selected = "") {
+    source.replaceChildren(new Option("My textures", ""));
+    for (const { id, label } of getTexturePacks()) source.append(new Option(label, id));
+    source.value = selected;
+  }
+  showOptions();
 
-  const variant = document.createElement("select");
-  variant.className = "pd-input";
-  variant.setAttribute("aria-label", "Texture variant");
-  variant.hidden = true;
-  controls.append(source, variant);
+  const folder = document.createElement("input");
+  folder.type = "file";
+  folder.setAttribute("webkitdirectory", "");
+  folder.hidden = true;
+  const addFolder = document.createElement("button");
+  addFolder.type = "button";
+  addFolder.className = "pd-btn";
+  addFolder.textContent = "Add Folder";
+  addFolder.addEventListener("click", () => folder.click());
+  folder.addEventListener("change", async () => {
+    if (!folder.files?.length) return;
+    addFolder.disabled = true;
+    try {
+      showOptions(await importTextureFolder(folder.files));
+      selectPack();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Could not import this folder");
+    } finally {
+      folder.value = "";
+      addFolder.disabled = false;
+    }
+  });
+  controls.append(source, addFolder, folder);
 
   const grid = document.createElement("div");
   grid.className = "thumbs-grid texture-grid";
@@ -25,28 +48,20 @@ export function makeTextureCatalog(onChange: () => void) {
   let activated = false;
 
   function selectPack() {
-    const pack = texturePacks.find(item => item.id === source.value);
-    variant.replaceChildren(...(pack?.variants ?? []).map(({ id, label }) => new Option(label, id)));
-    variant.hidden = variant.options.length < 2;
-    renderGrid();
-    onChange();
-  }
-
-  function renderGrid() {
-    const pack = texturePacks.find(item => item.id === source.value);
-    const version = pack?.variants.find(item => item.id === variant.value);
-    grid.style.display = version ? "" : "none";
+    const pack = getTexturePacks().find(item => item.id === source.value);
+    grid.style.display = pack ? "" : "none";
     grid.replaceChildren();
-    for (const texture of version?.textures ?? []) {
-      const cell = makeThumbCell(texture, () => insertName(useBundledTexture(texture).name), { label: texture.label, lazy: true });
-      attachNodeDrag(cell, { kind: "texture" }, () => ({ kind: "texture", data: { media: useBundledTexture(texture).id } }));
+    for (const texture of pack?.textures ?? []) {
+      const preview = texture.thumbnail ? texture : { ...texture, thumbnail: resolveUrl(texture.url) };
+      const cell = makeThumbCell(preview, () => insertName(useCatalogTexture(texture).name), { label: texture.label, lazy: true });
+      attachNodeDrag(cell, { kind: "texture" }, () => ({ kind: "texture", data: { media: useCatalogTexture(texture).id } }));
       grid.append(cell);
     }
     grid.scrollTop = 0;
+    onChange();
   }
 
   source.addEventListener("change", selectPack);
-  variant.addEventListener("change", renderGrid);
   return {
     controls, grid,
     browsing: () => source.value !== "",

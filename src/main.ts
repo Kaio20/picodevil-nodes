@@ -31,10 +31,12 @@ import { NodeProjection } from "./node-projection";
 import { loadNodes, saveNodes, type NodeSession } from "./node-session";
 import { createExampleGraph } from "./node-examples";
 import { loadExampleMedia } from "./media-loader";
+import { loadTextureLibrary, onTextureLibraryChange } from "./texture-library";
 
 import { Pattern, useRNG } from "@strudel/core";
 useRNG('precise');
 initPatternRegistry();
+const textureLibraryReady = loadTextureLibrary();
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 
@@ -256,6 +258,7 @@ document.addEventListener("visibilitychange", scheduleFrame);
 let currentCode = defaultCode;
 export function getCurrentCode(): string { return currentCode; }
 
+await textureLibraryReady;
 const urlState = loadFromUrl();
 const savedNodes = loadNodes();
 const initialGraph = savedNodes?.draft ?? starterGraph();
@@ -378,6 +381,7 @@ const sidebarControls = setupSidebar(!urlState && !savedNodes, mode === "nodes" 
   void loadExampleMedia(example.media ?? []);
 });
 addOnChange(() => { nodeEditor.mediaChanged(); saveWorkspace(); });
+onTextureLibraryChange(() => nodeEditor.mediaChanged());
 onFftConfigChange(saveWorkspace);
 showWorkspace(mode);
 if (mode === "nodes") nodeEditor.run(session.live ?? (savedNodes ? starterGraph() : initialGraph));
