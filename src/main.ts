@@ -1,5 +1,5 @@
 import "./visual-controls";
-import { defaultCode, insertReferenceCode, setupEditor } from "./editor";
+import { defaultCode, insertReferenceCode, insertVideoCode, setupEditor } from "./editor";
 import "./code-workspace.css";
 import "./editor-color.css";
 import "./shuffle-stack";
@@ -257,7 +257,11 @@ const editor = setupEditor(
 );
 // A fresh session = no saved URL state. Tells the media loader to auto-pull the
 // curated CDN defaults so a first-time visitor lands with media ready.
-setupSidebar(!urlState, fragment => insertReferenceCode(editor, fragment));
+setupSidebar(
+  !urlState,
+  fragment => insertReferenceCode(editor, fragment),
+  (name, point) => insertVideoCode(editor, name, point),
+);
 
 const preview = document.getElementById("pd-preview")!;
 const previewToggle = document.getElementById("pd-preview-toggle")! as HTMLButtonElement;

@@ -13,6 +13,8 @@ import {
 import { makeThumbCell, cellKey, insertName } from "./thumbs";
 
 let container: HTMLElement;
+type VideoDrop = (name: string, point: { x: number; y: number }) => boolean;
+let dropVideo: VideoDrop | undefined;
 
 // The videos tab has two modes over the same media: "edit" (the row list, with
 // rename/url/delete) and "view" (a read-only grid of thumbnails, click to insert
@@ -183,8 +185,9 @@ export function shouldAutoloadDefaults(isFreshSession: boolean, entryCount: numb
   return isFreshSession && entryCount === 0;
 }
 
-export function setupMediaLoader(el: HTMLElement, isFreshSession = false) {
+export function setupMediaLoader(el: HTMLElement, isFreshSession = false, onVideoDrop?: VideoDrop) {
   container = el;
+  dropVideo = onVideoDrop;
   setOnChange(render);
   setStreamOnChange(render);
   // Re-render when the server connection status changes so the "Load all"
@@ -641,8 +644,7 @@ export function reconcileGrid(grid: HTMLElement, entries: MediaEntry[]) {
       const newCell = makeThumbCell(entry, insertName);
       newCell.dataset.entryId = entry.id;
       newCell.dataset.cellKey = key;
-      // Drag the cell to reorder (shared registry order → the list reorders too).
-      attachReorder(newCell, newCell, entry, "x");
+      attachMediaDrag(newCell, newCell, entry, "x");
       if (cell) grid.replaceChild(newCell, cell);
       cell = newCell;
       byId.set(entry.id, cell);
@@ -678,7 +680,7 @@ export function reconcileGrid(grid: HTMLElement, entries: MediaEntry[]) {
 // live preview: the dragged element is moved among its siblings as you drag, so
 // you see where it lands. The registry isn't touched until release, when
 // moveMediaBefore commits the previewed order (so both panes + the URL update);
-// a cancelled drag is restored by the final render().
+// a cancelled drag or a drop in the editor restores the order.
 //
 // Touch: a short press-and-hold lifts the item (so ordinary finger-scrolling of
 // the list still works — moving before the hold aborts to a scroll), and page
@@ -688,6 +690,7 @@ const TOUCH_HOLD_MS = 220;  // press-and-hold before a touch drag lifts
 
 type DragState = {
   name: string; el: HTMLElement; pane: HTMLElement; axis: "x" | "y";
+  video: boolean;
   pointerId: number; startX: number; startY: number;
   isTouch: boolean; active: boolean; holdTimer?: ReturnType<typeof setTimeout>;
   offsetX: number; offsetY: number; clone?: HTMLElement;
@@ -707,6 +710,7 @@ function beginActive() {
   if (!drag || drag.active) return;
   clearTimeout(drag.holdTimer);
   drag.active = true;
+  if (drag.video && dropVideo) document.body.classList.add("pd-dragging-video");
   // The real element becomes an empty placeholder (holding the slot); a fixed-
   // position clone rides the cursor. Only the placeholder moves in flow, so
   // there's no reflow-vs-hit-test churn.
@@ -726,7 +730,6 @@ function beginActive() {
   drag.clone = clone;
   moveClone(drag.startX, drag.startY);
   drag.el.classList.add("drag-placeholder");
-  document.addEventListener("touchmove", preventTouchScroll, { passive: false });
 }
 
 /** Slot the dragged element before/after whichever item is under the pointer. */
@@ -761,7 +764,9 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
-  if (drag && e.pointerId === drag.pointerId) finishDrag(true);
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const inserted = drag.active && drag.video && dropVideo?.(drag.name, { x: e.clientX, y: e.clientY });
+  finishDrag(!inserted);
 }
 function onPointerCancel(e: PointerEvent) {
   if (drag && e.pointerId === drag.pointerId) finishDrag(false);
@@ -774,9 +779,9 @@ function finishDrag(commit: boolean) {
   document.removeEventListener("pointermove", onPointerMove);
   document.removeEventListener("pointerup", onPointerUp);
   document.removeEventListener("pointercancel", onPointerCancel);
-  document.removeEventListener("touchmove", preventTouchScroll);
   drag = null;
   if (!active) return; // never lifted → it was a tap/scroll; leave the click alone
+  document.body.classList.remove("pd-dragging-video");
   clone?.remove();
   el.classList.remove("drag-placeholder");
   if (commit) {
@@ -787,19 +792,24 @@ function finishDrag(commit: boolean) {
   // Swallow the click that a mouse-up/tap fires right after a real drag, so the
   // drop doesn't also insert the clip's name.
   const swallow = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); };
-  document.addEventListener("click", swallow, { capture: true, once: true });
-  const t = setTimeout(() => document.removeEventListener("click", swallow, { capture: true }), 350);
+  el.addEventListener("click", swallow, { capture: true, once: true });
+  const t = setTimeout(() => el.removeEventListener("click", swallow, { capture: true }), 350);
   render(); // normalise DOM to the registry (commit applied it; a cancel restores it)
 }
 
-/** Wire `handle` to start a reorder of `item` (the row or cell) on press. */
-function attachReorder(handle: HTMLElement, item: HTMLElement, entry: MediaEntry, axis: "x" | "y") {
+/** Drag within the library to reorder, or drop a video into the editor. */
+function attachMediaDrag(handle: HTMLElement, item: HTMLElement, entry: MediaEntry, axis: "x" | "y") {
+  const video = entry.type === "video";
+  if (video) handle.dataset.videoDrag = "";
+  // Register before touchstart so the browser lets the hold gesture suppress
+  // scrolling if it becomes a drag. Ordinary touch scrolling stays available.
+  handle.addEventListener("touchmove", preventTouchScroll, { passive: false });
   handle.addEventListener("pointerdown", (e) => {
     if (drag || e.button !== 0 || !e.isPrimary) return;
     const pane = item.parentElement;
     if (!pane) return;
     drag = {
-      name: entry.name, el: item, pane, axis,
+      name: entry.name, el: item, pane, axis, video,
       pointerId: e.pointerId, startX: e.clientX, startY: e.clientY,
       isTouch: e.pointerType === "touch", active: false, offsetX: 0, offsetY: 0,
     };
@@ -821,7 +831,7 @@ function makeRow(entry: MediaEntry): HTMLElement {
   const thumb = document.createElement("div");
   thumb.className = "vid-thumb";
   thumb.dataset.flipKey = entry.name;
-  thumb.title = `Insert "${entry.name}"`;
+  thumb.title = entry.type === "video" ? `Insert "${entry.name}" or drag into code` : `Insert "${entry.name}"`;
   thumb.addEventListener("click", () => insertName(entry.name));
   if (isStream) {
     const active = isStreamActive(entry.name);
@@ -943,9 +953,7 @@ function makeRow(entry: MediaEntry): HTMLElement {
   });
   row.appendChild(delBtn);
 
-  // Drag by the thumbnail to reorder the row up/down (shared registry order → the
-  // grid reorders too). On touch, press-and-hold the thumbnail to lift it.
-  attachReorder(thumb, row, entry, "y");
+  attachMediaDrag(thumb, row, entry, "y");
 
   return row;
 }

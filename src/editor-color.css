@@ -81,3 +81,32 @@
 .nd-color-popover .nd-field[aria-invalid="true"] { border-color: var(--nd-color-boolean); }
 .nd-color-recents { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; min-height: 19px; color: var(--fg-mid); }
 .nd-color-recents .nd-color-swatch { min-height: 19px; padding: 0; }
+
+.pd-hex-color {
+  display: inline-block;
+  margin-inline-start: .12ch;
+  vertical-align: baseline;
+}
+.pd-hex-color > .nd-color-swatch {
+  box-sizing: border-box;
+  width: 1ch;
+  height: 1ch;
+  padding: 0;
+  border-color: #c3cbd7;
+  border-radius: 1px;
+  font: inherit;
+  user-select: none;
+}
+.pd-hex-color > .nd-color-unset { background: var(--nd-checker); }
+.pd-hex-color > .nd-color-unset::after { content: none; }
+.pd-hex-color > .nd-color-swatch:focus-visible {
+  outline: 2px solid #5ba8ff;
+  outline-offset: 2px;
+}
+.pd-hex-color .nd-color-popover {
+  white-space: normal;
+  overflow-wrap: normal;
+}
+.pd-hex-color .nd-color-alpha-row {
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+}

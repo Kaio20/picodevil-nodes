@@ -35,7 +35,18 @@ function slider(label: string, className: string) {
   return input;
 }
 
-export function colorField(initial: ColorValue | undefined, label: string, commit: (color: ColorValue | undefined) => void, optional = false, isSet = initial !== undefined) {
+interface ColorFieldOptions {
+  optional?: boolean;
+  isSet?: boolean;
+  hexDraft?: string;
+}
+
+export function colorField(
+  initial: ColorValue | undefined,
+  label: string,
+  commit: (color: ColorValue | undefined) => void,
+  { optional = false, isSet = initial !== undefined, hexDraft }: ColorFieldOptions = {},
+) {
   let current = isSet ? initial : undefined;
   let working = initial ?? whiteColor;
   let [hue, saturation, brightness] = rgbToHsv(rgbFromHex(working.hex));
@@ -55,7 +66,7 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   const surface = document.createElement("div");
   surface.className = "nd-color-surface";
   const wheel = colorButton("Color wheel", "nd-color-wheel");
-  wheel.autofocus = true;
+  wheel.autofocus = hexDraft === undefined;
   wheel.setAttribute("aria-description", "Left and right adjust hue. Up and down adjust saturation.");
   const marker = document.createElement("span");
   marker.className = "nd-color-marker";
@@ -77,6 +88,7 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   hex.className = "nd-field";
   hex.spellcheck = false;
   hex.autocomplete = "off";
+  hex.autofocus = hexDraft !== undefined;
   hex.maxLength = 9;
   hex.title = "Hex RGB or RGBA";
   hexLabel.append("Hex", hex);
@@ -94,7 +106,7 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   const refresh = () => {
     trigger.classList.toggle("nd-color-unset", !current);
     trigger.style.setProperty("--nd-swatch", current ? colorCss(working) : "transparent");
-    trigger.title = current ? colorHex(working) : isSet ? "Existing color" : "Inherit color";
+    trigger.title = current ? colorHex(working) : hexDraft ?? (isSet ? "Existing color" : "Inherit color");
     clear.disabled = !isSet;
     const angle = hue * 2 * Math.PI;
     marker.style.left = `${50 + Math.cos(angle) * saturation * 50}%`;
@@ -210,6 +222,7 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   popover.addEventListener("beforetoggle", event => {
     if (event.newState !== "open") return;
     refresh();
+    if (!current && hexDraft !== undefined) hex.value = hexDraft;
     refreshRecent();
     popover.style.left = "0px";
     popover.style.top = "0px";

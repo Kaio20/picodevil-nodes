@@ -90,7 +90,8 @@ import type { WidgetCallInfo, FontPickerCallInfo } from "./transpiler";
 import { createPlayButton, type PlayButton } from "./play-button";
 import { editorCompletion } from "./editor-completion";
 import { argumentBar } from "./editor-argument-bar";
-import { referenceInsertion } from "./editor-assistance";
+import { hexColorWidgets } from "./editor-hex-colors";
+import { referenceInsertion, videoInsertion } from "./editor-assistance";
 import { referenceDragType, type CodeFragment } from "./editor-catalog";
 
 declare global {
@@ -178,6 +179,22 @@ export function insertReferenceCode(view: EditorView, fragment: CodeFragment, po
     userEvent: pos === undefined ? "input.reference" : "input.drop",
   });
   view.focus();
+}
+
+export function insertVideoCode(view: EditorView, name: string, point?: { x: number; y: number }): boolean {
+  if (view.state.readOnly) return false;
+  if (point && !view.scrollDOM.contains(document.elementFromPoint(point.x, point.y))) return false;
+  const pos = point ? view.posAtCoords(point, false) : view.state.selection.main.head;
+  if (pos === null) return false;
+  const changes = videoInsertion(view.state, pos, name);
+  view.dispatch({
+    changes,
+    selection: { anchor: changes.from + changes.insert.length },
+    scrollIntoView: true,
+    userEvent: "input.drop",
+  });
+  view.focus();
+  return true;
 }
 
 const referenceDrop = Prec.highest(EditorView.domEventHandlers({
@@ -386,7 +403,7 @@ export function setupEditor(
   // sideways (which is awkward on touch / narrow screens).
   const extensions: Extension = [
     basicSetup, EditorView.lineWrapping, javascriptLanguage, pdHighlight,
-    evalKeymap, referenceDrop, editorCompletion, signature, widgets, changeListener, persistListener,
+    evalKeymap, referenceDrop, editorCompletion, hexColorWidgets, signature, widgets, changeListener, persistListener,
   ];
   const saved = loadSession();
   const view = new EditorView({

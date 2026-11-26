@@ -142,19 +142,44 @@ export function parametersFor(entry: ReferenceEntry, method: boolean): Reference
   return method && fieldTransforms.has(entry.name) ? entry.params.slice(1) : entry.params;
 }
 
-export const choiceValues: Record<string, readonly string[]> = {
-  blend: ["source-over", "lighter", "add", "multiply", "screen", "destination-out", "subtract", "min", "max"],
-  objectfit: ["cover", "contain", "fill", "none", "tile", "tilecenter"],
-  smearop: ["avg", "avgl", "max", "min", "maxl", "minl", "median", "medianl", "range", "rangel", "sharpen"],
-  modspace: ["uv", "tile", "screen"],
-  mattespace: ["uv", "tile", "screen"],
+export interface ChoiceSuggestions {
+  common: readonly string[];
+  other?: readonly string[];
+}
+
+export const choiceValues: Partial<Record<string, ChoiceSuggestions>> = {
+  "blend:0": { common: ["source-over", "multiply", "screen", "lighter"], other: ["add", "destination-out", "subtract", "min", "max"] },
+  "objectfit:0": { common: ["cover", "contain", "fill"], other: ["none", "tile", "tilecenter"] },
+  "smearop:0": { common: ["avg", "max", "min", "median"], other: ["avgl", "maxl", "minl", "medianl", "range", "rangel", "sharpen"] },
+  "modspace:0": { common: ["uv", "tile", "screen"] },
+  "mattespace:0": { common: ["uv", "tile", "screen"] },
+  "lerp:0": { common: ["linear", "sine", "quad", "cubic"], other: ["quart", "quint", "expo", "circ", "elastic", "bounce", "back"] },
+  "lerp:1": { common: ["inout", "in", "out"] },
 };
+
+export const textArguments = new Set([
+  "text:0", "qr:0", "font:0", "fontpicker:0", "fontaxis:0", "urlbase:0",
+  "loadvideo:0", "loadvideo:1", "loadimage:0", "loadimage:1", "loadcamera:0", "loadscreen:0",
+]);
+export const patternArguments = new Set(["screen:0", "video:0", "image:0", "mini:0"]);
 
 export const colorArguments = new Set(["color", "fontcolor", "fontbgcolor"]);
 export const ratioArguments = new Set([
   "alpha:0", "begin:0", "end:0", "duration:0", "scrub:0", "sync:0", "echo:2",
   "cropx:0", "cropy:0", "crop:0", "crop:1", "width:0", "height:0", "size:0", "size:1",
   "huerot:0", "tint:0", "slider:1", "slider:2",
+]);
+
+export const floatDefault = "0.0";
+export const floatArguments = new Set([
+  ...ratioArguments,
+  "brightness:0", "contrast:0", "grey:0", "tint:1", "barrel:0", "vignette:0", "smear:0", "smear:1", "smear:2",
+  "blur:0", "blur:1", "dilate:0", "dilate:1", "erode:0", "erode:1", "modulate:1", "matte:1",
+  "rotate:0", "rotate:1", "rotatex:0", "rotatey:0", "rotatez:0", "scale:0", "scalex:0", "scaley:0",
+  "x:0", "y:0", "radius:0", "startoffset:0", "scroll:0", "scroll:1", "scrollx:0", "scrolly:0",
+  "crop:2", "crop:3", "cropw:0", "croph:0", "cropsize:0", "fontaxis:1", "fontsize:0",
+  "speed:0", "fast:0", "slow:0", "fit:0", "early:0", "late:0", "echo:1", "range:0", "range:1",
+  "slider:0", "slider:3", "setcps:0", "setcpm:0",
 ]);
 
 export const referenceDragType = "application/x-picodevil-code";

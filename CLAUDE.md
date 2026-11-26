@@ -72,7 +72,7 @@ The Node server lives in a sibling repo at [`../server/`](../server/) — see [`
 
 ## How the frontend works
 
-The code workspace uses CodeMirror for completion and caret tracking. `editor-catalog.ts` shares JSDoc signatures and the node palette between suggestions, the docked Reference tab and the argument bar. `editor-argument-bar.ts` writes changes to the source and reuses the NodesDevil color picker and number scrubbing.
+The code workspace uses CodeMirror for completion and caret tracking. `editor-catalog.ts` shares JSDoc signatures and the node palette between suggestions, the docked Reference tab and the argument bar. `editor-argument-bar.ts` places value controls on the active code line and writes changes to the source. `editor-choice-field.ts` provides editable dropdowns using suggested values from the catalog.
 
 1. `src/main.ts` maintains a `screens` array collected from `.p()` registrations each eval cycle.
 2. The transpiler converts `$: expr` lines into `expr.p("$")` calls, and wraps double-quoted strings in `mini()`.

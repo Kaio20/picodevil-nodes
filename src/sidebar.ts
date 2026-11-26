@@ -36,7 +36,11 @@ export function resolveSidebarOpen(raw: string | null): boolean {
   try { return JSON.parse(raw).open ?? true; } catch { return true; }
 }
 
-export function setupSidebar(isFreshSession: boolean, insert: (fragment: CodeFragment) => void) {
+export function setupSidebar(
+  isFreshSession: boolean,
+  insert: (fragment: CodeFragment) => void,
+  insertVideo: (name: string, point?: { x: number; y: number }) => boolean,
+) {
   const toggle = document.getElementById("sidebar-toggle")!;
   const panel = document.getElementById("sidebar-panel")!;
   const handle = panel.querySelector<HTMLElement>(".resize-handle")!;
@@ -94,7 +98,15 @@ export function setupSidebar(isFreshSession: boolean, insert: (fragment: CodeFra
     insert(fragment);
   });
   const videosTab = document.getElementById("tab-videos");
-  if (videosTab) setupMediaLoader(videosTab, isFreshSession);
+  const videoDropZone = document.getElementById("pd-video-drop-zone");
+  if (videosTab) setupMediaLoader(videosTab, isFreshSession, (name, point) => {
+    if (compact.matches && videoDropZone?.contains(document.elementFromPoint(point.x, point.y))) {
+      if (!insertVideo(name)) return false;
+      setOpen(false);
+      return true;
+    }
+    return insertVideo(name, point);
+  });
   const perfTab = document.getElementById("tab-perf");
   if (perfTab) setupPerfPanel(perfTab);
   const audioTab = document.getElementById("tab-audio");

@@ -8,18 +8,21 @@ picodevil is a live-coding visual instrument. You write JavaScript in a browser 
 npm install && npm run dev
 ```
 
-The editor opens with a color pattern you can run without media files. Put the cursor in `.alpha(0.85)` and change the value in code or with the slider in the function bar. Press **Ctrl+Enter** (**Cmd+Enter** on macOS) or click **Run** to update the output.
+The editor opens with a color pattern you can run without media files. Put the cursor in `.alpha(0.85)` and change the value in code or with the slider beside it. Press **Ctrl+Enter** (**Cmd+Enter** on macOS) or click **Run** to update the output.
 
 As you type, the editor shows matching functions and previews the rest of the selected name in faint text. **↑** and **↓** move through suggestions, **Tab** accepts one, and **Esc** dismisses the list. Type a dot after a source to browse its methods.
 
-Open **Reference** to search and scroll through the color-coded categories. Select a category heading to jump to it. Expand a function to see its parameters and examples. Drag a function or example into the editor, or use **＋** to insert it at the cursor.
+Open **Reference** and search the function index on the left. Select a colored category heading to collapse or expand it. Select a function to jump to its description, parameters and examples in the scrollable documentation on the right. Drag a function or example into the editor, or use **＋** to insert it at the cursor.
 
-The bar below the editor follows the innermost function call and highlights the current argument. Values you change in the bar are written into the code.
+Drag a thumbnail from **Videos** onto the editor. An empty line gets a layer such as `$: s("ducks")`. Drop inside an `s()`, `screen()` or `video()` pattern to add the clip there. On narrow screens, drag to **Drop in code** to insert at the cursor.
 
-| In code | In the function bar |
+The bar below the editor explains the function or signal at the cursor or in the selection. Inside a call, it highlights the current parameter. The active number, choice or text value becomes an editable field in place, using the same font size as the code. Changes from any of the controls are written into the source.
+
+| In code | Editing controls |
 | --- | --- |
-| `.alpha(0.85)` | Type or drag the number, or use the 0–1 slider. |
-| `.blend("screen")` | Pick a mode from the dropdown or type a value such as `screen lighter`. |
+| `.alpha(0.85)` | Type or drag the number, or use the 0–1 slider on the same line. |
+| `.blend("screen")` | Click the field to see common modes first. Type to filter the list or enter a free value such as `screen lighter`. Use the arrow keys and Enter to choose a mode. |
+| `color("#3e8948 #265c42")` | Click the small square after either hex value to edit that step. Only the source is copied. |
 | `color('rgba(37, 226, 205, 0.5)')` | Open the swatch to edit hue, brightness, alpha or hex. |
 | `color("red blue")` | Type steps or select them and use **Group**, **Alternate**, **Together**, **Repeat** or **Rest**. |
 

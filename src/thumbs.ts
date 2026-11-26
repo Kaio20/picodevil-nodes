@@ -22,7 +22,7 @@ export function makeThumbCell(entry: MediaEntry, onPick: (name: string) => void)
   cell.className = "thumb-cell";
   cell.type = "button";
   cell.dataset.flipKey = entry.name; // paired with the row's thumb for the view⇄edit transition
-  cell.title = `Insert "${entry.name}"`;
+  cell.title = entry.type === "video" ? `Insert "${entry.name}" or drag into code` : `Insert "${entry.name}"`;
 
   if (entry.thumbnail) {
     const img = document.createElement("img");

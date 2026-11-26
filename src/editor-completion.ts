@@ -6,21 +6,24 @@ import { syntaxTree } from "@codemirror/language";
 import { Prec, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
 import { callName } from "./editor-assistance";
-import { categoryColors, getReference, referenceCategories, signature } from "./editor-catalog";
+import { categoryColors, floatArguments, floatDefault, getReference, referenceCategories, signature } from "./editor-catalog";
 
 interface Suggestion extends Completion {
   accent?: string;
   call?: boolean;
   hasArgs?: boolean;
+  initialArgument?: string;
 }
 
 function completionAboveCode(view: EditorView, option: Suggestion, from: number, to: number) {
   const alreadyOpen = /^\s*\(/.test(view.state.doc.sliceString(to, view.state.doc.lineAt(to).to));
   const parentheses = option.call && !alreadyOpen;
-  const insert = option.label + (parentheses ? "()" : "");
+  const initial = parentheses ? option.initialArgument ?? "" : "";
+  const insert = option.label + (parentheses ? `(${initial})` : "");
+  const head = from + insert.length - Number(parentheses && !!(option.hasArgs || initial));
   view.dispatch({
     changes: { from, to, insert },
-    selection: { anchor: from + insert.length - Number(parentheses && !!option.hasArgs) },
+    selection: { anchor: head - initial.length, head },
     annotations: pickedCompletion.of(option),
     userEvent: "input.complete",
   });
@@ -36,6 +39,7 @@ const options = referenceCategories.flatMap(({ name, entries }) => entries.flatM
     boost: index ? -4 : name === "Sources" ? 5 : 0,
     call: !entry.constant,
     hasArgs: entry.params.length > 0,
+    initialArgument: floatArguments.has(`${entry.name.toLowerCase()}:0`) ? floatDefault : undefined,
     apply: completionAboveCode,
   } satisfies Suggestion)),
 ));
@@ -95,7 +99,8 @@ const ghost = ViewPlugin.fromClass(class {
     this.decorations = Decoration.none;
     if (!view.hasFocus || !empty || !option || !typed || /^[\w$]/.test(after)) return;
     if (!option.label.toLowerCase().startsWith(typed.toLowerCase())) return;
-    const text = option.label.slice(typed.length) + (option.call && !/^\s*\(/.test(after) ? "()" : "");
+    const text = option.label.slice(typed.length) +
+      (option.call && !/^\s*\(/.test(after) ? `(${option.initialArgument ?? ""})` : "");
     if (text) this.decorations = Decoration.set([Decoration.widget({ widget: new GhostText(text), side: 1 }).range(head)]);
   }
 }, { decorations: plugin => plugin.decorations });
