@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111715">
+    <title>NodesDevil Compositor</title>
+    <script type="module" src="/src/compositor/main.ts"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><strong>NodesDevil</strong><span class="product">Compositor</span></div>
+      <div class="actions">
+        <a class="button quiet" href="%BASE_URL%">Classic editor</a>
+        <button id="load" class="quiet" type="button">Open saved</button>
+        <button id="save" class="quiet" type="button">Save</button>
+      </div>
+      <div class="transport">
+        <label class="bpm">BPM <input id="bpm" type="number" min="1" max="480" value="120"></label>
+        <button id="projection" type="button">Open Output</button>
+        <button id="take" class="accent" type="button" disabled>Take</button>
+      </div>
+    </header>
+    <main>
+      <section class="workspace" aria-label="Node graph">
+        <div class="graphbar">
+          <h1>Graph</h1>
+          <div class="actions">
+            <button id="add-node" class="quiet" type="button" aria-haspopup="dialog">+ Add Node</button>
+            <button id="fit" class="quiet" type="button" title="Fit all nodes">Fit</button>
+          </div>
+        </div>
+        <div id="graph" class="graph" tabindex="0" aria-label="Node canvas. Scroll to zoom. Drag the background to pan.">
+          <div id="scene" class="scene">
+            <svg id="wires" xmlns="http://www.w3.org/2000/svg" aria-label="Connections"></svg>
+            <div id="cards"></div>
+          </div>
+          <dialog id="node-menu" class="node-menu">
+            <label for="node-search">Add Node</label>
+            <input id="node-search" type="search" placeholder="Search nodes…" autocomplete="off">
+            <div id="node-results"></div>
+          </dialog>
+        </div>
+        <footer class="graphstatus">
+          <span id="status" role="status">Preparing WebGPU…</span>
+          <span id="zoom" aria-label="Graph zoom"></span>
+        </footer>
+      </section>
+      <aside class="tools" aria-label="Viewer and controls">
+        <section class="panel viewer">
+          <header class="panel-heading">
+            <div><h2>Preview</h2><span id="preview-label">Output</span></div>
+            <button id="view-output" class="quiet" type="button">View Output</button>
+          </header>
+          <div class="screen"><canvas id="preview" width="640" height="360" aria-label="Draft preview"></canvas></div>
+        </section>
+        <section class="panel inspector">
+          <header class="panel-heading"><h2 id="inspector-heading">Inspector</h2></header>
+          <div id="inspector-body" class="panel-body"></div>
+        </section>
+        <section id="media" class="panel media">
+          <header class="panel-heading">
+            <h2>Media</h2>
+            <button id="import" class="quiet" type="button">Import Video</button>
+            <input id="files" type="file" accept="video/*,.mp4,.webm" multiple hidden>
+          </header>
+          <div id="assets" class="panel-body assets"></div>
+        </section>
+      </aside>
+    </main>
+  </body>
+</html>

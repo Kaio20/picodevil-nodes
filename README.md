@@ -23,6 +23,14 @@ You can do this by cloning this repository (or downloading it), and then running
 
 Then opening [http://localhost:5173/](http://localhost:5173/) in your browser.
 
+## Live Compositor prototype
+
+Open **Compositor** in the classic editor or go to [localhost:5173/compositor/](http://localhost:5173/compositor/). The prototype needs hardware WebGPU. It starts with two local test videos, a procedural mask, and a beat-driven displacement. Drag videos from **Media** to the graph, use **Add Node** to search, and drag between sockets. Select a node to edit its controls and see its result. Right-click a cable or its input to disconnect it.
+
+**Open Output** opens a separate window. Double-click its canvas for fullscreen. Click **Take** or press **Ctrl/Cmd+Enter** to send the current preview graph to that window. **Save** and **Open saved** keep one project and its imported videos in the current browser. The prototype has its own graph format.
+
+Run `npm run test:compositor` with Vite running and Google Chrome installed. The performance comparison and native runner are documented in [the benchmark notes](bench/compositor-native/README.md).
+
 ## Project status
 
 This is, I guess, a v1, although I'm not committing to any proper versioning right now. It has not been tested by very many people — mostly just me — although I feel confident enough in it to perform with it. There are areas that I expect to change - for example, the image effects like `grey()`, and the audio reactivity system (`fft[0]`). And I'm sure there's lots of bugs, and also rough areas that look like bugs but actually just haven't been fully thought through. As such, things might change without notice! If this is a worrying prospect for you, I encourage you to clone the repo and run it locally.

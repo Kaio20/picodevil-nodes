@@ -324,9 +324,11 @@ export class NodeEditor {
     top.append(brand, add, button("Variables", () => this.toggleVariables()), this.undoButton, this.redoButton,
       playback, output);
     const navigation = element("div", "nd-navigation");
+    const compositor = element("a", "nd-button", "Compositor");
+    compositor.href = import.meta.env.BASE_URL + "compositor/";
     navigation.append(iconButton("minus", "Zoom out", () => this.centerZoom(1 / 1.2)), this.zoomLabel,
       iconButton("plus", "Zoom in", () => this.centerZoom(1.2)), button("Frame All", () => this.fit()),
-      button("Code", options.showCode));
+      button("Code", options.showCode), compositor);
     this.viewport.append(this.wires, this.world, this.selectionBox, this.ghost, this.insertHint, navigation, this.menu, this.variables);
     host.append(top, this.viewport);
     this.dismissTooltip = setupNodeTooltip(host);
