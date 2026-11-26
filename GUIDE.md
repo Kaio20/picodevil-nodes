@@ -1,6 +1,6 @@
 # picodevil user guide
 
-picodevil is a live-coding visual instrument. You write JavaScript in a browser editor, press **Ctrl+Enter** to evaluate, and the code controls what gets drawn to a fullscreen canvas. Everything is built on rhythmic patterns from [Strudel](https://strudel.cc).
+picodevil is a live-coding visual instrument. You write JavaScript in a browser editor and watch the result in **Output**. Choose **Expand** to see the canvas on its own. Everything is built on rhythmic patterns from [Strudel](https://strudel.cc).
 
 ## Getting started
 
@@ -8,7 +8,22 @@ picodevil is a live-coding visual instrument. You write JavaScript in a browser 
 npm install && npm run dev
 ```
 
-Open the browser. Type code in the editor. Press Ctrl+Enter to run it.
+The editor opens with a color pattern you can run without media files. Put the cursor in `.alpha(0.85)` and change the value in code or with the slider in the function bar. Press **Ctrl+Enter** (**Cmd+Enter** on macOS) or click **Run** to update the output.
+
+As you type, the editor shows matching functions and previews the rest of the selected name in faint text. **↑** and **↓** move through suggestions, **Tab** accepts one, and **Esc** dismisses the list. Type a dot after a source to browse its methods.
+
+Open **Reference** to search and scroll through the color-coded categories. Select a category heading to jump to it. Expand a function to see its parameters and examples. Drag a function or example into the editor, or use **＋** to insert it at the cursor.
+
+The bar below the editor follows the innermost function call and highlights the current argument. Values you change in the bar are written into the code.
+
+| In code | In the function bar |
+| --- | --- |
+| `.alpha(0.85)` | Type or drag the number, or use the 0–1 slider. |
+| `.blend("screen")` | Pick a mode from the dropdown or type a value such as `screen lighter`. |
+| `color('rgba(37, 226, 205, 0.5)')` | Open the swatch to edit hue, brightness, alpha or hex. |
+| `color("red blue")` | Type steps or select them and use **Group**, **Alternate**, **Together**, **Repeat** or **Rest**. |
+
+To try a pattern, place the cursor in `"red blue"`. Spaces play both steps in one cycle. **Alternate** wraps them as `"<red blue>"`, so one color plays per cycle. A `~` leaves a rest.
 
 ## Case-insensitive API
 

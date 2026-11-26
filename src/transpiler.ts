@@ -1,5 +1,6 @@
 import * as acorn from "acorn";
 import * as escodegen from "escodegen";
+import { isFunctionalColor } from "./color-value";
 
 /** Label pattern: optional _, S, or H prefix, then identifier chars, optional trailing _ */
 const LABEL_RE = /^[_SH]?[$a-zA-Z]\w*_?$/;
@@ -89,6 +90,17 @@ function guardStatement(): any {
 
 function walkAST(node: any, widgets: WidgetCallInfo[]): any {
   if (!node || typeof node !== "object") return node;
+
+  if (node.type === "CallExpression") {
+    const name = node.callee?.type === "MemberExpression" && !node.callee.computed
+      ? node.callee.property.name : node.callee?.name;
+    const first = node.arguments[0];
+    if (/^(?:color|fontColor|fontBGColor)$/i.test(name ?? "") &&
+      first?.type === "Literal" && typeof first.value === "string" && isFunctionalColor(first.value)) {
+      // Functional CSS colors must survive the double-quoted mini rewrite.
+      first.raw = undefined;
+    }
+  }
 
   // Double-quoted string → wrap in mini() (return a new node; caller must reassign)
   if (node.type === "Literal" && typeof node.value === "string" && node.raw?.startsWith('"')) {

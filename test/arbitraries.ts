@@ -738,6 +738,19 @@ export const screenExpr: fc.Arbitrary<GeneratedExpr> = fc.oneof(
     }))
   },
 
+  // A single RGBA source, with the same alpha controls as a named or hex color.
+  {
+    weight: 1, arbitrary: fc.tuple(
+      fc.integer({ min: 0, max: 255 }),
+      fc.integer({ min: 0, max: 255 }),
+      fc.integer({ min: 0, max: 255 }),
+      fc.integer({ min: 0, max: 100 }),
+      fc.array(sharedMethod, { minLength: 0, maxLength: 2 }),
+    ).map(([r, g, b, opacity, methods]) => ({
+      code: `color("rgba(${r}, ${g}, ${b}, ${opacity / 100})")${methods.map(method => method.code).join("")}`,
+    }))
+  },
+
   // image (with urlBase)
   {
     weight: 2, arbitrary: fc.tuple(

@@ -44,6 +44,18 @@ beforeEach(() => {
 });
 
 describe("render pipeline (meta-effect)", () => {
+  it("combines RGBA source alpha with the pattern's opacity", () => {
+    (color("rgba(255, 0, 0, 0.5)") as any).alpha(0.5).p("$");
+    renderOnce(canvas => {
+      const [r, g, b, a] = readPixel(canvas, 50, 50);
+      expect(r).toBeGreaterThan(60);
+      expect(r).toBeLessThan(68);
+      expect([g, b]).toEqual([0, 0]);
+      expect(a).toBeGreaterThan(60);
+      expect(a).toBeLessThan(68);
+    });
+  });
+
   it("a full-frame render places content across the whole canvas", () => {
     (color("red") as any).grey(1).render().p("$");
     renderOnce((canvas) => {

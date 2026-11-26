@@ -88,6 +88,10 @@ import { pdHighlight } from "./highlight";
 import { widgetExtension, setWidgetMeta, toSigFigs, widgetPositions } from "./editor-widgets";
 import type { WidgetCallInfo, FontPickerCallInfo } from "./transpiler";
 import { createPlayButton, type PlayButton } from "./play-button";
+import { editorCompletion } from "./editor-completion";
+import { argumentBar } from "./editor-argument-bar";
+import { referenceInsertion } from "./editor-assistance";
+import { referenceDragType, type CodeFragment } from "./editor-catalog";
 
 declare global {
   interface Window {
@@ -155,10 +159,48 @@ export function buildInitialState(
       // fall through to a clean doc
     }
   }
-  return EditorState.create({ doc: initialCode, extensions });
+  const selection = initialCode === defaultCode ? { anchor: defaultCode.indexOf("0.85") } : undefined;
+  return EditorState.create({ doc: initialCode, selection, extensions });
 }
 
-export const defaultCode = ``;
+export const defaultCode = `// Each colour plays for one cycle. Try changing the pattern.
+$: color("<#5ba8ff #25e2cd #a675fe>")
+  .alpha(0.85)
+  .blend("source-over")`;
+
+export function insertReferenceCode(view: EditorView, fragment: CodeFragment, pos?: number) {
+  const range = pos === undefined ? view.state.selection.main : { from: pos, to: pos };
+  const changes = referenceInsertion(view.state, range, fragment);
+  view.dispatch({
+    changes,
+    selection: { anchor: changes.from + changes.insert.length },
+    scrollIntoView: true,
+    userEvent: pos === undefined ? "input.reference" : "input.drop",
+  });
+  view.focus();
+}
+
+const referenceDrop = Prec.highest(EditorView.domEventHandlers({
+  dragover(event) {
+    if (!event.dataTransfer?.types.includes(referenceDragType)) return false;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    return false;
+  },
+  drop(event, view) {
+    const data = event.dataTransfer?.getData(referenceDragType);
+    if (!data) return false;
+    event.preventDefault();
+    try {
+      const fragment = JSON.parse(data) as CodeFragment;
+      if (typeof fragment.text === "string" && ["method", "expression", "example"].includes(fragment.kind)) {
+        const position = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+        if (position !== null) insertReferenceCode(view, fragment, position);
+      }
+    } catch { /* An invalid custom payload isn't a reference entry. */ }
+    return true;
+  },
+}));
 
 export function setupEditor(
   parent: HTMLElement,
@@ -172,6 +214,11 @@ export function setupEditor(
   const warnEl = document.createElement("div");
   warnEl.className = "pd-warning";
   parent.appendChild(warnEl);
+
+  const editorHost = document.createElement("div");
+  editorHost.className = "pd-code-host";
+  parent.appendChild(editorHost);
+  const signature = argumentBar(parent);
 
   function showError(msg: string | null) {
     if (msg) {
@@ -233,10 +280,8 @@ export function setupEditor(
 
   const widgets = widgetExtension({ slider: handleSliderChange, fontPicker: handleFontPickerChange });
 
-  // The round "evaluate" button at the bottom-left. It lights up whenever the
-  // editor text differs from what was last evaluated, so touch users (who can't
-  // press Ctrl/Cmd-Enter) have a way to re-eval. Created below once the view
-  // exists; tracked here so evalAndDecorate can clear the dirty flag.
+  // The Run button lights up when there are unevaluated edits. Keep the button
+  // state in sync for users who evaluate through the keyboard.
   let playButton: PlayButton | null = null;
   let lastEvaluatedCode = initialCode;
 
@@ -341,11 +386,11 @@ export function setupEditor(
   // sideways (which is awkward on touch / narrow screens).
   const extensions: Extension = [
     basicSetup, EditorView.lineWrapping, javascriptLanguage, pdHighlight,
-    evalKeymap, widgets, changeListener, persistListener,
+    evalKeymap, referenceDrop, editorCompletion, signature, widgets, changeListener, persistListener,
   ];
   const saved = loadSession();
   const view = new EditorView({
-    parent,
+    parent: editorHost,
     state: buildInitialState(initialCode, saved, extensions),
   });
 
@@ -364,9 +409,17 @@ export function setupEditor(
     if (document.visibilityState === "hidden") saveSession(view);
   });
 
-  // Round evaluate button (bottom-left). Lives on <body> so it isn't clipped by
-  // editor-wrap's overflow:hidden, and is visible on desktop + touch alike.
-  playButton = createPlayButton(document.body, () => runEval(view));
+  const runSlot = document.getElementById("pd-run-slot");
+  playButton = createPlayButton(runSlot ?? document.body, () => {
+    runEval(view);
+    view.focus();
+  });
+  if (runSlot) playButton.el.append("Run");
+  parent.addEventListener("keydown", event => {
+    if (event.defaultPrevented || event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    runEval(view);
+  });
 
   window.pdSetCode = (code: string, evaluate = false) => {
     view.dispatch({

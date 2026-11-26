@@ -46,27 +46,35 @@
   <script src="https://cdn.usefathom.com/script.js" data-site="XHMHGDFJ" defer></script>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <div id="editor-wrap"></div>
-  <button id="sidebar-toggle">‹</button>
+  <header class="pd-workspace-header">
+    <div class="pd-workspace-title">picodevil</div>
+    <div id="pd-run-slot"></div>
+    <div class="pd-key-hints"><kbd>Ctrl / ⌘ + Enter</kbd> Run <kbd>Tab</kbd> Complete</div>
+    <button id="sidebar-toggle" type="button" aria-controls="sidebar-panel" aria-expanded="false">Reference</button>
+  </header>
+  <div id="editor-wrap" aria-label="Code editor"></div>
+  <section id="pd-preview" aria-label="Output preview">
+    <div class="pd-preview-heading"><span>Output</span><button id="pd-preview-toggle" type="button" aria-expanded="false">Expand</button></div>
+    <canvas id="c" aria-label="Rendered output"></canvas>
+  </section>
   <div id="sidebar-panel">
     <div class="resize-handle"></div>
     <div class="tabs">
+      <button class="active" data-tab="reference">reference</button>
+      <button data-tab="examples">examples</button>
       <button data-tab="videos">videos</button>
       <button data-tab="audio">audio</button>
       <button data-tab="perf">perf</button>
-      <button data-tab="reference">reference</button>
-      <button data-tab="examples">examples</button>
-      <button class="active" data-tab="about">about</button>
+      <button data-tab="about">about</button>
     </div>
     <div id="tab-videos" class="tab-content"></div>
     <div id="tab-audio" class="tab-content"></div>
     <div id="tab-perf" class="tab-content"></div>
-    <div id="tab-reference" class="tab-content">
+    <div id="tab-reference" class="tab-content active">
       <p class="ref-placeholder">Loading reference…</p>
     </div>
     <div id="tab-examples" class="tab-content"></div>
-    <div id="tab-about" class="tab-content active"></div>
+    <div id="tab-about" class="tab-content"></div>
   </div>
   <script type="module" src="src/main.ts"></script>
 </body>

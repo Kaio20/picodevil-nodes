@@ -10,4 +10,5 @@ declare module "@strudel/mini" {
   }
 
   export function mini(input: string): Pattern;
+  export function getLeafLocations(code: string, start?: number, userCode?: string): [number, number][];
 }

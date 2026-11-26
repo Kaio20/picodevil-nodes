@@ -16,6 +16,7 @@ import type { createVideoPoolManager } from './video-pool-manager';
 import { buildFontString, renderTextToCanvas } from './text-render';
 import { renderQrToCanvas } from './qr-render';
 import { resolveAxisTag } from './text-render-opentype';
+import { colorFromCss, rgbFromHex } from './color-value';
 
 import { getHarfbuzzFace, renderTextHarfbuzz } from './text-render-harfbuzz';
 import { FONT_AXES } from './font-list';
@@ -55,14 +56,13 @@ export class FrameRenderer {
   private readonly metrics: FrameMetrics;
   /** Free image elements keyed by srcUrl. Images are lightweight and never evicted. */
   private readonly imageFreePool = new Map<string, HTMLImageElement>();
-  private readonly colorCache = new Map<string, [number, number, number]>();
+  private readonly colorCache = new Map<string, [number, number, number, number]>();
   /** Rendered text canvases keyed by render inputs. Insertion-ordered for LRU. */
   private readonly textCanvasCache = new Map<string, HTMLCanvasElement>();
   private readonly qrCanvasCache = new Map<string, HTMLCanvasElement>();
   /** Memoised @font-face lookups, invalidated when a stylesheet is added/removed. */
   private fontSrcCache = new Map<string, string | null>();
   private fontSrcSheetCount = -1;
-  private readonly scratchCtx = document.createElement('canvas').getContext('2d')!;
   /** Assignment from NeededSource to element for the current frame. */
   private neededToEl = new Map<NeededSource, VideoEl | HTMLImageElement>();
   /** Reverse map: FrameEvent key ("si:ei") → NeededSource. Built each frame. */
@@ -343,28 +343,13 @@ export class FrameRenderer {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  private parseColor(val: string): [number, number, number] {
+  private parseColor(val: string): [number, number, number, number] {
     const cached = this.colorCache.get(val);
     if (cached) return cached;
-    this.scratchCtx.fillStyle = '#000';
-    this.scratchCtx.fillStyle = val;
-    const hex = this.scratchCtx.fillStyle;
-    if (hex === '#000000' && val !== 'black' && val !== '#000000' && val !== '#000') {
-      this.colorCache.set(val, [1, 1, 1]);
-      return [1, 1, 1];
-    }
-    const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
-    if (m) {
-      const result: [number, number, number] = [
-        parseInt(m[1], 16) / 255,
-        parseInt(m[2], 16) / 255,
-        parseInt(m[3], 16) / 255,
-      ];
-      this.colorCache.set(val, result);
-      return result;
-    }
-    this.colorCache.set(val, [1, 1, 1]);
-    return [1, 1, 1];
+    const color = typeof val === "string" ? colorFromCss(val) : undefined;
+    const result: [number, number, number, number] = color ? [...rgbFromHex(color.hex), color.alpha] : [1, 1, 1, 1];
+    this.colorCache.set(val, result);
+    return result;
   }
 
   /**
@@ -716,7 +701,8 @@ export class FrameRenderer {
     // Source
     let source: TileSource;
     if (ev._type === 'color') {
-      const [r, g, b] = this.parseColor(ev.color);
+      const [r, g, b, opacity] = this.parseColor(ev.color);
+      alpha *= opacity;
       source = { kind: 'color', r, g, b };
     } else if (ev._type === 'image') {
       const key = `${screenIndex}:${eventIndex}`;

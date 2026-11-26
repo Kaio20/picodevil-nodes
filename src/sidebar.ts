@@ -1,4 +1,5 @@
 import { setupReference } from "./reference";
+import type { CodeFragment } from "./editor-catalog";
 import { setupMediaLoader } from "./media-loader";
 import { setupPerfPanel } from "./perf-panel";
 import { setupAudioTab } from "./audio-sidebar";
@@ -27,7 +28,7 @@ function saveState(updates: Partial<{ open: boolean; tab: string; width: number 
  * tab writes `{tab}`, resizing writes `{width}`) would demote a never-closed
  * sidebar to closed on the next load.
  *
- * The default active tab (About) lives in index.html, overridden by a stored
+ * The default active tab (Reference) lives in index.html, overridden by a stored
  * `tab` in setupSidebar.
  */
 export function resolveSidebarOpen(raw: string | null): boolean {
@@ -35,7 +36,7 @@ export function resolveSidebarOpen(raw: string | null): boolean {
   try { return JSON.parse(raw).open ?? true; } catch { return true; }
 }
 
-export function setupSidebar(isFreshSession = false) {
+export function setupSidebar(isFreshSession: boolean, insert: (fragment: CodeFragment) => void) {
   const toggle = document.getElementById("sidebar-toggle")!;
   const panel = document.getElementById("sidebar-panel")!;
   const handle = panel.querySelector<HTMLElement>(".resize-handle")!;
@@ -45,24 +46,27 @@ export function setupSidebar(isFreshSession = false) {
   // flashes before JS runs); open it here for a first visit / untouched reload.
   // Suppress the transition for this initial set so it snaps to its resting state
   // instead of sliding on load — re-enabled below so later user toggles animate.
-  const open = resolveSidebarOpen(localStorage.getItem(STORAGE_KEY));
+  const compact = window.matchMedia("(max-width: 700px)");
+  const open = saved.open ?? (!compact.matches && resolveSidebarOpen(localStorage.getItem(STORAGE_KEY)));
+  const setOpen = (active: boolean) => {
+    panel.classList.toggle("open", active);
+    panel.inert = !active;
+    toggle.classList.toggle("open", active);
+    toggle.setAttribute("aria-expanded", String(active));
+  };
   panel.style.transition = "none";
-  panel.classList.toggle("open", open);
-  toggle.classList.toggle("open", open);
-  toggle.textContent = open ? "›" : "‹";
+  setOpen(open);
   void panel.offsetWidth; // force reflow so "none" applies before restoring
   panel.style.transition = "";
 
   // Restore width
-  if (saved.width) {
-    panel.style.width = saved.width + "px";
-  }
+  const setWidth = (width: number) => document.body.style.setProperty("--pd-user-sidebar-width", width + "px");
+  if (saved.width) setWidth(saved.width);
 
   toggle.addEventListener("click", () => {
-    const open = panel.classList.toggle("open");
-    toggle.classList.toggle("open", open);
-    toggle.textContent = open ? "›" : "‹";
-    saveState({ open });
+    const active = !panel.classList.contains("open");
+    setOpen(active);
+    saveState({ open: active });
   });
 
   // Drag left edge to resize
@@ -72,8 +76,7 @@ export function setupSidebar(isFreshSession = false) {
     const startWidth = panel.offsetWidth;
 
     const onMove = (e: MouseEvent) => {
-      const w = Math.max(200, startWidth + (startX - e.clientX));
-      panel.style.width = w + "px";
+      setWidth(startWidth + (startX - e.clientX));
     };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
@@ -86,7 +89,10 @@ export function setupSidebar(isFreshSession = false) {
 
   // Populate tabs
   const refTab = document.getElementById("tab-reference");
-  if (refTab) setupReference(refTab);
+  if (refTab) setupReference(refTab, fragment => {
+    if (compact.matches) setOpen(false);
+    insert(fragment);
+  });
   const videosTab = document.getElementById("tab-videos");
   if (videosTab) setupMediaLoader(videosTab, isFreshSession);
   const perfTab = document.getElementById("tab-perf");
@@ -101,8 +107,8 @@ export function setupSidebar(isFreshSession = false) {
   // Tabs
   const tabs = panel.querySelectorAll<HTMLButtonElement>(".tabs button");
 
-  // Restore active tab, overriding the About default (index.html) when stored
-  if (saved.tab) {
+  // Restore the active tab when it still exists.
+  if (saved.tab && Array.from(tabs).some(tab => tab.dataset.tab === saved.tab)) {
     tabs.forEach((t) => t.classList.remove("active"));
     panel.querySelectorAll<HTMLElement>(".tab-content").forEach((el) => el.classList.remove("active"));
     tabs.forEach((t) => {

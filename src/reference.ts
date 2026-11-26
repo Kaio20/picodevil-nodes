@@ -1,147 +1,119 @@
-import data from "virtual:reference-data";
+import { categoryColors, parametersFor, referenceCategories, referenceDragType, signature, type CodeFragment } from "./editor-catalog";
 import { renderReferenceMarkdown } from "./reference-markdown";
 import { highlightJsToHtml, injectHighlightCss } from "./highlight-code";
 
-interface RefEntry {
-  name: string;
-  description: string;
-  params: string[];
-  examples: string[];
-  aliases: string[];
-  isMethod: boolean;
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string) {
+  const element = document.createElement(tag);
+  element.className = className;
+  if (text) element.textContent = text;
+  return element;
 }
 
-interface RefCategory {
-  name: string;
-  entries: RefEntry[];
+function draggable(element: HTMLElement, fragment: CodeFragment) {
+  element.draggable = true;
+  element.addEventListener("dragstart", event => {
+    if (!event.dataTransfer) return;
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(referenceDragType, JSON.stringify(fragment));
+    event.dataTransfer.setData("text/plain", fragment.text);
+  });
 }
 
-export function setupReference(container: HTMLElement) {
+function insertButton(label: string, fragment: CodeFragment, insert: (fragment: CodeFragment) => void) {
+  const button = el("button", "ref-insert", "＋");
+  button.type = "button";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  draggable(button, fragment);
+  button.addEventListener("click", () => insert(fragment));
+  return button;
+}
+
+export function setupReference(container: HTMLElement, insert: (fragment: CodeFragment) => void) {
   injectHighlightCss();
-  const categories = data as RefCategory[];
+  const wrap = el("div", "ref-wrap");
+  const toolbar = el("div", "ref-toolbar");
+  const search = el("input", "ref-search");
+  search.type = "search";
+  search.placeholder = "Find a function, effect or pattern…";
+  search.setAttribute("aria-label", "Search reference");
+  const hint = el("small", "ref-hint", "Drag a function into the editor or use ＋.");
+  toolbar.append(search, hint);
+  const list = el("div", "ref-list");
+  list.setAttribute("aria-label", "Reference categories");
+  const empty = el("p", "ref-empty", "No matching functions.");
+  empty.hidden = true;
+  wrap.append(toolbar, list, empty);
 
-  const wrap = document.createElement("div");
-  wrap.className = "ref-wrap";
-
-  const navCol = document.createElement("div");
-  navCol.className = "ref-nav-col";
-
-  const searchBox = document.createElement("input");
-  searchBox.type = "text";
-  searchBox.placeholder = "search…";
-  searchBox.className = "ref-search";
-  navCol.appendChild(searchBox);
-
-  const nav = document.createElement("div");
-  nav.className = "ref-nav";
-
-  const detail = document.createElement("div");
-  detail.className = "ref-detail";
-
-  // Track all elements for filtering
-  const filterItems: { query: string; navLink: HTMLElement; detailEntry: HTMLElement; cat: string }[] = [];
-  const catNavHeads = new Map<string, HTMLElement>();
-  const catDetailHeads = new Map<string, HTMLElement>();
-
-  for (const cat of categories) {
-    const navHead = document.createElement("div");
-    navHead.textContent = cat.name;
-    navHead.className = "ref-nav-head";
-    nav.appendChild(navHead);
-    catNavHeads.set(cat.name, navHead);
-
-    const detailHead = document.createElement("h3");
-    detailHead.textContent = cat.name;
-    detailHead.id = `ref-cat-${cat.name.replace(/\W/g, "")}`;
-    detailHead.className = "ref-detail-head";
-    detail.appendChild(detailHead);
-    catDetailHeads.set(cat.name, detailHead);
-
-    for (const entry of cat.entries) {
-      const entryId = `ref-${entry.name}`;
-
-      const navLink = document.createElement("a");
-      navLink.textContent = `${entry.name}()`;
-      navLink.href = `#${entryId}`;
-      navLink.className = "ref-nav-link";
-      navLink.addEventListener("click", (e) => {
-        e.preventDefault();
-        const target = detail.querySelector(`#${entryId}`);
-        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  const groups = referenceCategories.map(({ name, entries }) => {
+    // A marker keeps the natural scroll position while the heading is docked.
+    const marker = el("div", "ref-marker");
+    const header = el("button", "ref-category", name);
+    header.type = "button";
+    header.style.setProperty("--pd-category", categoryColors[name]);
+    header.addEventListener("click", () => {
+      const offset = marker.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      const top = Number.parseFloat(getComputedStyle(header).top) || 0;
+      list.scrollTo({ top: list.scrollTop + offset - top, behavior: "smooth" });
+    });
+    const body = el("div", "ref-category-body");
+    body.style.setProperty("--pd-category", categoryColors[name]);
+    const rows = entries.map(entry => {
+      const row = el("div", "ref-row");
+      const details = el("details", "ref-entry");
+      const label = signature(entry);
+      const summary = el("summary", "ref-summary");
+      summary.append(el("code", "ref-entry-name", label), el("span", "ref-summary-text", entry.summary));
+      draggable(summary, entry.fragment);
+      details.append(summary);
+      details.addEventListener("toggle", () => {
+        if (!details.open || details.childElementCount > 1) return;
+        const content = el("div", "ref-entry-content");
+        const description = el("div", "ref-entry-desc");
+        description.innerHTML = renderReferenceMarkdown(entry.description);
+        content.append(description);
+        if (entry.aliases.length) content.append(el("div", "ref-entry-aliases", `Aliases: ${entry.aliases.join(", ")}`));
+        for (const param of parametersFor(entry, entry.isMethod)) {
+          const line = el("div", "ref-entry-params");
+          line.append(el("code", "", param.name), ` — ${param.description}`);
+          content.append(line);
+        }
+        for (const example of entry.examples) {
+          const fragment: CodeFragment = { kind: "example", text: example };
+          const demo = el("div", "ref-example-row");
+          const pre = el("pre", "ref-entry-example");
+          pre.innerHTML = highlightJsToHtml(example);
+          draggable(pre, fragment);
+          demo.append(pre, insertButton(`Insert ${entry.name} example`, fragment, insert));
+          content.append(demo);
+        }
+        details.append(content);
       });
-      nav.appendChild(navLink);
-
-      const entryEl = document.createElement("div");
-      entryEl.id = entryId;
-      entryEl.className = "ref-entry";
-
-      const sig = `${entry.name}(${entry.params.length ? "..." : ""})`;
-      const nameEl = document.createElement("div");
-      nameEl.className = "ref-entry-name";
-      nameEl.textContent = sig;
-      if (entry.aliases.length) {
-        const aliasSpan = document.createElement("span");
-        aliasSpan.className = "ref-entry-aliases";
-        aliasSpan.textContent = `aliases: ${entry.aliases.map((a) => `${a}()`).join(", ")}`;
-        nameEl.appendChild(aliasSpan);
-      }
-      entryEl.appendChild(nameEl);
-
-      const descEl = document.createElement("div");
-      descEl.className = "ref-entry-desc";
-      // Descriptions use a small markdown subset (paragraphs, bullet lists,
-      // inline `code`). renderReferenceMarkdown escapes HTML and the input is
-      // our own build-time JSDoc, so assigning innerHTML is safe here.
-      descEl.innerHTML = renderReferenceMarkdown(entry.description);
-      entryEl.appendChild(descEl);
-
-      if (entry.params.length) {
-        const paramsEl = document.createElement("div");
-        paramsEl.className = "ref-entry-params";
-        paramsEl.textContent = entry.params.join(" | ");
-        entryEl.appendChild(paramsEl);
-      }
-
-      for (const ex of entry.examples) {
-        const exEl = document.createElement("pre");
-        exEl.className = "ref-entry-example";
-        // Reuse the editor's JS syntax highlighting. highlightJsToHtml escapes
-        // HTML and the input is our own build-time examples, so innerHTML is safe.
-        exEl.innerHTML = highlightJsToHtml(ex);
-        entryEl.appendChild(exEl);
-      }
-
-      detail.appendChild(entryEl);
-
-      const displayName = `${entry.name}(`;
-      const queryText = [displayName, entry.name, ...entry.aliases, entry.description].join(" ").toLowerCase();
-      filterItems.push({ query: queryText, navLink, detailEntry: entryEl, cat: cat.name });
-    }
-  }
-
-  // Filter logic
-  searchBox.addEventListener("input", () => {
-    const term = searchBox.value.toLowerCase().trim();
-    const visibleCats = new Set<string>();
-
-    for (const item of filterItems) {
-      const match = !term || item.query.includes(term);
-      item.navLink.style.display = match ? "" : "none";
-      item.detailEntry.style.display = match ? "" : "none";
-      if (match) visibleCats.add(item.cat);
-    }
-
-    for (const [catName, el] of catNavHeads) {
-      el.style.display = visibleCats.has(catName) ? "" : "none";
-    }
-    for (const [catName, el] of catDetailHeads) {
-      el.style.display = visibleCats.has(catName) ? "" : "none";
-    }
+      row.append(details, insertButton(`Insert ${entry.name}`, entry.fragment, insert));
+      body.append(row);
+      const query = [entry.name, name, entry.description, ...entry.aliases, ...entry.params.map(param => param.name)].join(" ").toLowerCase();
+      return { row, query };
+    });
+    list.append(marker, header, body);
+    return { marker, header, body, rows };
   });
 
-  navCol.appendChild(nav);
-  wrap.appendChild(navCol);
-  wrap.appendChild(detail);
-  container.innerHTML = "";
-  container.appendChild(wrap);
+  function filter() {
+    const term = search.value.toLowerCase().trim().replace(/^\./, "").replace(/\(\)$/, "");
+    const visible = groups.filter(({ marker, header, body, rows }) => {
+      for (const { row, query } of rows) row.hidden = !query.includes(term);
+      const hide = rows.every(({ row }) => row.hidden);
+      marker.hidden = header.hidden = body.hidden = hide;
+      return !hide;
+    });
+    visible.forEach(({ header }, index) => {
+      header.style.setProperty("--pd-before", String(index));
+      header.style.setProperty("--pd-after", String(visible.length - index - 1));
+    });
+    empty.hidden = visible.length > 0;
+    list.scrollTop = 0;
+  }
+  search.addEventListener("input", filter);
+  filter();
+  container.replaceChildren(wrap);
 }

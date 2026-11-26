@@ -1,5 +1,7 @@
 import "./visual-controls";
-import { setupEditor } from "./editor";
+import { defaultCode, insertReferenceCode, setupEditor } from "./editor";
+import "./code-workspace.css";
+import "./editor-color.css";
 import "./shuffle-stack";
 import { CYCLES_PER_SECOND, setRuntimeCps, MAX_FREE_VIDEO_ELEMENTS } from "./config";
 import { CpsController } from "./cps-controller";
@@ -8,8 +10,6 @@ import { resolveMedia, addMedia, clearAll as clearMediaRegistry, setDurationByUr
 import { resolveUrl, probeHealth, shouldAutoProbeOnStartup } from "./server-config";
 import { initRegistry as initPatternRegistry, each, all } from "./pattern-registry";
 import { loadFromUrl, saveToUrl, setUrlWarnCallback, hashLooksCorrupt } from "./url-state";
-import { defaultCode } from "./editor";
-import { pickAutostartCode } from "./examples";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { slider as sliderWidget, fontPicker as fontPickerWidget } from "./widgets";
 import { initFontList } from "./font-list";
@@ -239,12 +239,6 @@ if (urlState) {
   initRegistry(urlState.media);
   currentCode = urlState.code;
   if (urlState.fft) applyFftConfig(urlState.fft);
-} else {
-  // Fresh session: greet the visitor with a random autostart-eligible example,
-  // paired with the CDN defaults the media loader auto-pulls. Flashing examples
-  // are excluded via `autostart: false`. Source names resolve at query time, so
-  // it renders once the async defaults land — no re-eval needed.
-  currentCode = pickAutostartCode() || defaultCode;
 }
 
 setUrlWarnCallback((msg) => { if (msg) warn(msg); });
@@ -253,7 +247,7 @@ addOnChange(saveUrl);
 onFftConfigChange(saveUrl);
 
 // --- editor ---
-setupEditor(
+const editor = setupEditor(
   document.getElementById("editor-wrap")!,
   currentCode,
   (code) => {
@@ -263,4 +257,17 @@ setupEditor(
 );
 // A fresh session = no saved URL state. Tells the media loader to auto-pull the
 // curated CDN defaults so a first-time visitor lands with media ready.
-setupSidebar(!urlState);
+setupSidebar(!urlState, fragment => insertReferenceCode(editor, fragment));
+
+const preview = document.getElementById("pd-preview")!;
+const previewToggle = document.getElementById("pd-preview-toggle")! as HTMLButtonElement;
+function setPreviewExpanded(expanded: boolean) {
+  preview.classList.toggle("pd-preview-expanded", expanded);
+  previewToggle.setAttribute("aria-expanded", String(expanded));
+  previewToggle.textContent = expanded ? "Back to code" : "Expand";
+  if (!expanded) editor.focus();
+}
+previewToggle.addEventListener("click", () => setPreviewExpanded(!preview.classList.contains("pd-preview-expanded")));
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && preview.classList.contains("pd-preview-expanded")) setPreviewExpanded(false);
+});

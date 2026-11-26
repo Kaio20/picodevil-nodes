@@ -78,7 +78,10 @@ function extractFromFile(source: string, filterNames?: Set<string>): RefEntry[] 
     const { description, params, examples } = parseJSDoc(jsdocBlock);
     if (!description) continue;
 
-    entries.push({ name, description, params, examples, aliases: [], isMethod: !!match[3] });
+    const initializer = source.slice(pattern.lastIndex);
+    const registered = /^\s*=\s*(?:createMixParam\(|register\()/.test(initializer);
+    const method = new RegExp(`PatternProto\\.${name}\\s*=(?!=)`).test(source);
+    entries.push({ name, description, params, examples, aliases: [], isMethod: !!match[3] || registered || method || name === "echo" });
   }
   return entries;
 }
@@ -86,10 +89,12 @@ function extractFromFile(source: string, filterNames?: Set<string>): RefEntry[] 
 // Find aliases like PatternProto.left = PatternProto.x
 function findAliases(source: string): Map<string, string[]> {
   const aliases = new Map<string, string[]>();
-  const re = /PatternProto\.(\w+)\s*=\s*PatternProto\.(\w+)/g;
+  const re = /PatternProto\.(\w+)\s*=\s*PatternProto\.(\w+)|export const (\w+)\s*=\s*(\w+)\s*;/g;
   let m;
   while ((m = re.exec(source)) !== null) {
-    const [, alias, target] = m;
+    const alias = m[1] ?? m[3];
+    const target = m[2] ?? m[4];
+    if (alias === target) continue;
     if (!aliases.has(target)) aliases.set(target, []);
     aliases.get(target)!.push(alias);
   }
@@ -125,7 +130,7 @@ function buildReferenceData(root: string): RefCategory[] {
   const categories: RefCategory[] = [];
 
   // --- picodevil source files ---
-  const fileMap: [string, string][] = [
+  const fileMap: [string, string, string[]?][] = [
     ["Sources", "src/color-pattern.ts"],
     ["Sources", "src/video-pattern.ts"],
     ["Sources", "src/image-pattern.ts"],
@@ -139,20 +144,19 @@ function buildReferenceData(root: string): RefCategory[] {
     ["Layout", "src/grid-stack.ts"],
     ["Layout", "src/shuffle-stack.ts"],
     ["Indexing", "src/index-patterns.ts"],
-    ["Iteration", "src/iterators.ts"],
     ["Randomness", "src/event-random.ts"],
-    ["Audio", "src/fft-audio.ts"],
+    ["Audio", "src/fft-audio.ts", ["fft"]],
     ["Widgets", "src/widgets.ts"],
     ["Signals", "src/strudel-globals.ts"],
     ["Transforms", "src/strudel-transforms.ts"],
-    ["Media", "src/media-registry.ts"],
-    ["Media", "src/stream-manager.ts"],
+    ["Media", "src/media-registry.ts", ["loadVideo", "loadImage"]],
+    ["Media", "src/stream-manager.ts", ["loadCamera", "loadScreen"]],
     ["Global", "src/runtime-globals.ts"],
-    ["Global", "src/pattern-registry.ts"],
+    ["Global", "src/pattern-registry.ts", ["each", "all"]],
   ];
 
   const catMap = new Map<string, RefEntry[]>();
-  for (const [catName, filePath] of fileMap) {
+  for (const [catName, filePath, names] of fileMap) {
     const fullPath = resolve(root, filePath);
     let source: string;
     try {
@@ -160,7 +164,7 @@ function buildReferenceData(root: string): RefCategory[] {
     } catch {
       continue;
     }
-    const entries = extractFromFile(source);
+    const entries = extractFromFile(source, names && new Set(names));
     const aliases = findAliases(source);
     // Attach aliases to entries
     for (const entry of entries) {
