@@ -15,7 +15,7 @@ export interface PreparedPlan {
   dispose(): void;
 }
 export interface Surface { context: GPUCanvasContext }
-export interface FrameTime { seconds: number; beats: number }
+export interface FrameTime { seconds: number; beats: number; audio?: readonly number[] }
 export type MediaTexture = (asset: string) => GPUTexture | undefined;
 
 export class Renderer {
@@ -110,6 +110,7 @@ export class Renderer {
     for (const [index, pass] of prepared.passes.entries()) {
       const values = new Float32Array(pass.spec.uniforms);
       values.set([time.seconds, time.beats, prepared.width, prepared.height]);
+      if (time.audio) values.set(time.audio, 4);
       this.device.queue.writeBuffer(pass.uniform, 0, values);
       const inputs = pass.spec.textures.map(id => textures.get(id)!);
       if (!pass.group || inputs.some((texture, index) => texture !== pass.inputs?.[index])) {

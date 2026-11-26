@@ -1,0 +1,40 @@
+:root {
+  --font-mono: "IBM Plex Mono", "Berkeley Mono", "Roboto Mono", monospace;
+
+  --bg-page: #000;
+  --bg-panel: hsla(50, 23%, 5%, 0.85);
+  --bg-input: #1a1a1a;
+  --bg-btn: #333;
+  --bg-btn-alt: #222;
+  --bg-popover: #161616;
+
+  --border: #333;
+  --border-mid: #444;
+  --border-light: #555;
+
+  --fg: #ccc;
+  --fg-bright: #fff;
+  --fg-mid: #aaa;
+  --fg-dim: #888;
+  --fg-dimmer: #666;
+  --fg-muted: #555;
+
+  /* Shared with CodeMirror and the syntax-highlighted reference. */
+  --hl-meta: #404740;
+  --hl-keyword: #ffca9c;
+  --hl-literal: #fff352;
+  --hl-string: #d7ffaf;
+  --hl-regexp: #c5a3ff;
+  --hl-variable: #ff857f;
+  --hl-type: #c2ffdf;
+  --hl-class: #5eb58a;
+  --hl-comment: #ffc400;
+  --hl-invalid: #f92672;
+
+  --accent: var(--hl-string);
+  --danger: #f92672;
+  --success: var(--hl-class);
+
+  --scrollbar-thumb: hsla(50, 12%, 55%, 0.5);
+  --scrollbar-thumb-hover: hsla(50, 14%, 65%, 1);
+}

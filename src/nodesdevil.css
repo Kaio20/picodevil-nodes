@@ -33,7 +33,7 @@
 .nd-brand { margin-right: 8px; color: var(--fg-bright); font-size: 14px; font-weight: 600; }
 .nd-playback-controls { display: flex; flex: 1 1 min-content; align-items: center; gap: inherit; }
 .nd-status { font-size: 11px; color: var(--fg-mid); overflow-wrap: anywhere; }
-.nd-status.error, .nd-node-error { color: #f6757a; }
+.nd-status.error, .nd-node-error { color: var(--nd-error); }
 .nd-button {
   border: 1px solid var(--border-light);
   border-radius: 3px;
@@ -57,7 +57,7 @@
   flex: 1;
   min-height: 0;
   outline: none;
-  background-image: radial-gradient(circle at 1px 1px, rgb(255 255 255 / .17) 1px, transparent 1.4px);
+  background-image: var(--nd-grid);
   background-size: 20px 20px;
   touch-action: none;
 }

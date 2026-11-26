@@ -12,18 +12,30 @@
 */
 
 /* Node categories */
-#node-editor [data-category="Sources"]   { --nd-category-color: #5ba8ff; --nd-category-fg-fallback: var(--fg-bright); }
-#node-editor [data-category="Signals"]   { --nd-category-color: #20b562; }
-#node-editor [data-category="Expressions"] { --nd-category-color: #beeb71; }
-#node-editor [data-category="Playback"]  { --nd-category-color: #f68f37; }
-#node-editor [data-category="Layout"]    { --nd-category-color: #ffe737; }
-#node-editor [data-category="Image"]     { --nd-category-color: #25e2cd; --nd-category-fg-fallback: var(--fg-bright); }
-#node-editor [data-category="Text"]      { --nd-category-color: #a675fe; }
-#node-editor [data-category="Variables"] { --nd-category-color: #ff82ce; --nd-category-fg-fallback: var(--fg-bright); }
-#node-editor [data-category="Output"]    { --nd-category-color: #e03c28; }
+#node-editor [data-category="Sources"]   { --nd-category-color: var(--nd-category-sources); --nd-category-fg-fallback: var(--fg-bright); }
+#node-editor [data-category="Signals"]   { --nd-category-color: var(--nd-category-signals); }
+#node-editor [data-category="Expressions"] { --nd-category-color: var(--nd-category-expressions); }
+#node-editor [data-category="Playback"]  { --nd-category-color: var(--nd-category-playback); }
+#node-editor [data-category="Layout"]    { --nd-category-color: var(--nd-category-layout); }
+#node-editor [data-category="Image"]     { --nd-category-color: var(--nd-category-image); --nd-category-fg-fallback: var(--fg-bright); }
+#node-editor [data-category="Text"]      { --nd-category-color: var(--nd-category-text); }
+#node-editor [data-category="Variables"] { --nd-category-color: var(--nd-category-variables); --nd-category-fg-fallback: var(--fg-bright); }
+#node-editor [data-category="Output"]    { --nd-category-color: var(--nd-category-output); }
 
 /* Keep the Unreal Blueprint hues when updating port and variable colors. */
 :root {
+  --nd-category-sources:     #5ba8ff;
+  --nd-category-signals:     #20b562;
+  --nd-category-expressions: #beeb71;
+  --nd-category-playback:    #f68f37;
+  --nd-category-layout:      #ffe737;
+  --nd-category-image:       #25e2cd;
+  --nd-category-text:        #a675fe;
+  --nd-category-variables:   #ff82ce;
+  --nd-category-output:      #e03c28;
+  --nd-grid: radial-gradient(circle at 1px 1px, rgb(255 255 255 / .17) 1px, transparent 1.4px);
+  --nd-error: #f6757a;
+
   --nd-color-visual:  #5ba8ff; /* Image: object-reference blue */
   --nd-color-number:  #8cd612; /* Float (Factor, Alpha): yellow-green */
   --nd-color-text:    #a675fe; /* Text (layer): pink */

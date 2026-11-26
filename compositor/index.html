@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#111715">
+    <meta name="theme-color" content="#000000">
     <title>NodesDevil Compositor</title>
     <script type="module" src="/src/compositor/main.ts"></script>
   </head>
@@ -17,7 +17,7 @@
       </div>
       <div class="transport">
         <label class="bpm">BPM <input id="bpm" type="number" min="1" max="480" value="120"></label>
-        <button id="projection" type="button">Open Output</button>
+        <button id="projection" type="button" disabled>Open Output</button>
         <button id="take" class="accent" type="button" disabled>Take</button>
       </div>
     </header>
@@ -26,6 +26,8 @@
         <div class="graphbar">
           <h1>Graph</h1>
           <div class="actions">
+            <button id="undo" class="quiet" type="button" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+            <button id="redo" class="quiet" type="button" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
             <button id="add-node" class="quiet" type="button" aria-haspopup="dialog">+ Add Node</button>
             <button id="fit" class="quiet" type="button" title="Fit all nodes">Fit</button>
           </div>
@@ -36,9 +38,16 @@
             <div id="cards"></div>
           </div>
           <dialog id="node-menu" class="node-menu">
-            <label for="node-search">Add Node</label>
-            <input id="node-search" type="search" placeholder="Search nodes…" autocomplete="off">
-            <div id="node-results"></div>
+            <div class="node-menu-columns">
+              <div class="node-menu-nav">
+                <input id="node-search" type="search" aria-label="Search nodes" placeholder="Search nodes…" autocomplete="off">
+                <div id="node-categories" role="group" aria-label="Node categories"></div>
+              </div>
+              <section id="node-results-panel" aria-labelledby="node-menu-heading" hidden>
+                <h2 id="node-menu-heading"></h2>
+                <div id="node-results"></div>
+              </section>
+            </div>
           </dialog>
         </div>
         <footer class="graphstatus">
@@ -46,7 +55,7 @@
           <span id="zoom" aria-label="Graph zoom"></span>
         </footer>
       </section>
-      <aside class="tools" aria-label="Viewer and controls">
+      <aside class="tools" aria-label="Viewer and library">
         <section class="panel viewer">
           <header class="panel-heading">
             <div><h2>Preview</h2><span id="preview-label">Output</span></div>
@@ -54,19 +63,55 @@
           </header>
           <div class="screen"><canvas id="preview" width="640" height="360" aria-label="Draft preview"></canvas></div>
         </section>
-        <section class="panel inspector">
-          <header class="panel-heading"><h2 id="inspector-heading">Inspector</h2></header>
-          <div id="inspector-body" class="panel-body"></div>
-        </section>
-        <section id="media" class="panel media">
-          <header class="panel-heading">
-            <h2>Media</h2>
-            <button id="import" class="quiet" type="button">Import Video</button>
-            <input id="files" type="file" accept="video/*,.mp4,.webm" multiple hidden>
-          </header>
-          <div id="assets" class="panel-body assets"></div>
+        <section class="panel library">
+          <div class="library-tabs" role="tablist" aria-label="Library">
+            <button id="tab-videos" type="button" role="tab" aria-selected="true" aria-controls="media">Videos</button>
+            <button id="tab-textures" type="button" role="tab" aria-selected="false" aria-controls="textures" tabindex="-1">Textures</button>
+            <button id="tab-audio" type="button" role="tab" aria-selected="false" aria-controls="audio" tabindex="-1">Audio</button>
+            <button id="tab-reference" type="button" role="tab" aria-selected="false" aria-controls="reference" tabindex="-1">Reference</button>
+          </div>
+          <div id="media" role="tabpanel" aria-labelledby="tab-videos">
+            <form id="video-url-form" class="library-controls">
+              <input id="video-url" type="url" aria-label="Paste URL to add" placeholder="Paste URL to add…" required>
+              <button id="add-video-url" type="submit">Add</button>
+            </form>
+            <div class="library-controls video-source-controls">
+              <button id="import" type="button" title="Browse local video files">Files</button>
+              <input id="files" type="file" accept="video/*,.mp4,.webm,.mov,.m4v,.mkv,.avi,.ogv" multiple hidden>
+              <button id="webcam" type="button" aria-pressed="false">Webcam</button>
+              <button id="screen" type="button" aria-pressed="false">Screen</button>
+            </div>
+            <div id="video-catalog-status" class="library-controls catalog-status" hidden></div>
+            <div id="assets" class="panel-body assets"></div>
+          </div>
+          <div id="textures" role="tabpanel" aria-labelledby="tab-textures" hidden>
+            <div class="library-controls">
+              <select id="texture-pack" aria-label="Texture collection"></select>
+              <button id="import-texture" class="quiet" type="button">Import</button>
+              <input id="image-files" type="file" accept="image/*" multiple hidden>
+            </div>
+            <div id="texture-assets" class="panel-body texture-assets"></div>
+          </div>
+          <div id="audio" role="tabpanel" aria-labelledby="tab-audio" hidden>
+            <div class="library-controls"><button id="microphone" type="button">Enable microphone</button></div>
+            <div id="audio-signals" class="panel-body assets"></div>
+          </div>
+          <div id="reference" role="tabpanel" aria-labelledby="tab-reference" hidden>
+            <div class="reference-navigation">
+              <input id="reference-search" type="search" aria-label="Search reference" placeholder="Search…" autocomplete="off">
+              <nav id="reference-groups" aria-label="Reference nodes"></nav>
+            </div>
+            <div id="reference-details" role="region" aria-label="Node documentation" tabindex="0"></div>
+          </div>
         </section>
       </aside>
     </main>
+    <dialog id="node-editor-dialog" class="node-editor-dialog" aria-labelledby="node-editor-title">
+      <header class="panel-heading">
+        <h2 id="node-editor-title"></h2>
+        <form method="dialog"><button class="quiet" type="submit">Done</button></form>
+      </header>
+      <div id="node-editor-fields" class="panel-body"></div>
+    </dialog>
   </body>
 </html>

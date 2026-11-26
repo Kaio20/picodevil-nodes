@@ -1,6 +1,23 @@
-export type SocketType = "image" | "color" | "float" | "bool" | "vec2";
-export type Value = number | string | boolean;
-type Parameter = { label: string; value: Value; min?: number; max?: number; step?: number; options?: string[] };
+import { clampUnit, isColorValue, type ColorValue } from "../color-value";
+import { textureFiles } from "../texture-files";
+
+export const texturePacks = Object.entries(textureFiles).map(([id, files]) => ({
+  id,
+  label: ({ "particle-pack": "Particle Pack", "light-masks": "Light Masks", "pattern-pack": "Pattern Pack" })[id as keyof typeof textureFiles],
+  assets: files.original.map(file => ({
+    id: `textures/${id}/${id === "light-masks" ? "white-on-black/" : ""}${file}`,
+    name: file.slice(0, -4).replaceAll("_", " "),
+  })),
+}));
+export const textures = new Map(texturePacks.flatMap(pack => pack.assets).map(asset => [asset.id, asset]));
+export const audioBands = ["Level", "Bass", "Mid", "Treble"];
+export const typeNames = {
+  float: "Float", integer: "Integer", vec2: "Vector", color: "Color", image: "Image", string: "String", text: "Text", bool: "Boolean",
+} as const;
+export type SocketType = keyof typeof typeNames;
+type Scalar = number | string | boolean;
+export type Value = Scalar | ColorValue;
+type Parameter = { label: string; value: Scalar; min?: number; max?: number; step?: number; options?: string[] };
 type Input = { label: string; type: SocketType; value?: Value; uniform?: boolean; mask?: boolean };
 type Definition = {
   label: string;
@@ -13,6 +30,7 @@ type Definition = {
 
 const image = (label: string): Input => ({ label, type: "image" });
 const float = (label: string, value: number): Input => ({ label, type: "float", value });
+const color = (label: string, hex: string): Input => ({ label, type: "color", value: { hex, alpha: 1 } });
 const factor: Input = { ...float("Factor", 1), mask: true };
 const number = (label: string, value: number, step = 0.01): Parameter => ({ label, value, step });
 const choice = (label: string, options: string[]): Parameter => ({ label, value: options[0], options });
@@ -21,6 +39,10 @@ const node = (label: string, group: Definition["group"], output: SocketType, inp
 
 export const nodes = {
   video: node("Video", "Media", "image", {}, { asset: { label: "Source", value: "demo-a" } }, true),
+  texture: node("Texture", "Media", "image", {}, { asset: { label: "Source", value: texturePacks[0].assets[0].id } }, true),
+  audio: node("Audio Signal", "Timing", "float", {}, { band: choice("Band", audioBands) }),
+  junction: node("Reroute", "Composite", "float", { in: float("Input", 0) },
+    { type: choice("Type", Object.keys(typeNames)), spatial: { label: "Field", value: false } }),
   output: node("Output", "Composite", "image", { image: image("Image") }),
   merge: node("Merge", "Composite", "image", { background: image("Background"), foreground: image("Foreground"), factor }, {
     mode: choice("Blend", ["Normal", "Multiply", "Screen"]),
@@ -30,14 +52,14 @@ export const nodes = {
   displace: node("Displace", "Composite", "image", {
     image: image("Image"), offset: { type: "vec2", label: "Offset", value: 0 }, strength: float("Strength", 0.1),
   }, {}, true),
-  value: node("Float", "Shader", "float", {}, { value: number("Value", 0.5) }),
+  value: node("Float", "Shader", "float", {}, { type: choice("Type", ["Float", "Integer"]), value: number("Value", 0.5) }),
   boolean: node("Boolean", "Shader", "bool", {}, { value: { label: "Value", value: true } }),
   switch: node("Switch", "Shader", "float", {
     condition: { label: "Condition", type: "bool", value: false }, inactive: float("False", 0), active: float("True", 1),
   }),
-  color: node("Color", "Shader", "color", {}, { color: { label: "Color", value: "#198ede" }, alpha: number("Alpha", 1) }),
+  color: node("Color", "Shader", "color", { color: color("Color", "#198ede") }),
   mixColor: node("Mix Color", "Shader", "color", {
-    a: { type: "color", label: "A", value: "#000000" }, b: { type: "color", label: "B", value: "#ffffff" },
+    a: color("A", "#000000"), b: color("B", "#ffffff"),
     factor: { ...factor, value: 0.5 },
   }),
   uv: node("UV", "Shader", "vec2", {}, {}, true),
@@ -48,8 +70,9 @@ export const nodes = {
   math: node("Math", "Shader", "float", { a: float("A", 0), b: float("B", 0.5) }, {
     operation: choice("Operation", ["Add", "Subtract", "Multiply", "Divide", "Minimum", "Maximum", "Greater Than"]),
   }),
-  ramp: node("Color Ramp", "Shader", "color", { factor: { ...factor, value: 0.5 } }, {
-    low: { label: "Start", value: "#000000" }, high: { label: "End", value: "#ffffff" },
+  ramp: node("Color Ramp", "Shader", "color", {
+    factor: { ...factor, value: 0.5 }, low: color("Start", "#000000"), high: color("End", "#ffffff"),
+  }, {
     from: number("Start position", 0), to: number("End position", 1),
   }),
   expression: node("Custom Expression", "Shader", "float", { a: float("A", 0), b: float("B", 1) }, {
@@ -68,6 +91,7 @@ export const nodes = {
 export type Kind = keyof typeof nodes;
 export interface GraphNode { id: string; kind: Kind; x: number; y: number; params: Record<string, Value> }
 export interface Edge { from: string; to: string; input: string }
+export interface Port { node: string; input?: string }
 export interface Project { version: 1; bpm: number; nodes: GraphNode[]; edges: Edge[] }
 export interface Signal { type: SocketType; spatial: boolean }
 export class GraphError extends Error {
@@ -76,8 +100,35 @@ export class GraphError extends Error {
 
 export const kinds = Object.keys(nodes) as Kind[];
 
+export const integerMin = -2147483648;
+export const integerMax = 2147483647;
+export function roundInteger(value: number) {
+  return Math.max(integerMin, Math.min(integerMax, Math.sign(value) * Math.round(Math.abs(value))));
+}
+
+function normalizeParams(kind: Kind, params: Record<string, Value>) {
+  const next = { ...params };
+  if (kind === "value" && next.type === undefined) next.type = "Float";
+  for (const [key, input] of Object.entries(nodes[kind].inputs)) {
+    if (input.type !== "color") continue;
+    const inputParam = "input:" + key;
+    const value = next[inputParam] ?? next[key];
+    if (typeof value !== "string") continue;
+    const alpha = kind === "color" ? next.alpha ?? 1 : 1;
+    next[inputParam] = typeof alpha === "number" && Number.isFinite(alpha)
+      ? { hex: value, alpha: clampUnit(alpha) }
+      : value;
+    delete next[key];
+    if (kind === "color") delete next.alpha;
+  }
+  return next;
+}
+
 export function makeNode(kind: Kind, x: number, y: number, id: string = crypto.randomUUID(), params: Record<string, Value> = {}): GraphNode {
-  return { id, kind, x, y, params: { ...Object.fromEntries(Object.entries(nodes[kind].parameters).map(([key, value]) => [key, value.value])), ...params } };
+  const defaults = Object.fromEntries(Object.entries(nodes[kind].parameters).map(([key, parameter]) => [key, parameter.value]));
+  const values = normalizeParams(kind, { ...defaults, ...params });
+  if (kind === "value" && values.type === "Integer" && typeof values.value === "number") values.value = roundInteger(values.value);
+  return { id, kind, x, y, params: values };
 }
 
 export function inputKey(to: string, input: string) { return JSON.stringify([to, input]); }
@@ -85,6 +136,11 @@ export function inputKey(to: string, input: string) { return JSON.stringify([to,
 export function conversion(source: Signal, target: Input): string | undefined {
   if (source.spatial && target.uniform) return undefined;
   if (source.type === target.type) return "";
+  if (source.type === "integer") {
+    if (target.type === "float") return "Integer → Float";
+    const numeric = conversion({ ...source, type: "float" }, target);
+    if (numeric) return numeric.replace(/^Float →/, "Integer →");
+  }
   if (source.type === "bool" && target.type === "float") return "Boolean → Float (0 or 1)";
   if (source.type === "float" && target.type === "bool") return "Float → Boolean (nonzero)";
   if (source.type === "float" && target.type === "color") return "Float → Color (grayscale)";
@@ -120,6 +176,13 @@ export function analyze(project: Project) {
     visiting.add(id);
     const item = byId.get(id)!;
     const def = nodes[item.kind];
+    if (item.kind === "junction") {
+      const cable = incoming.get(inputKey(id, "in"));
+      const signal = cable ? infer(cable.from) : { type: item.params.type as SocketType, spatial: Boolean(item.params.spatial) };
+      signals.set(id, signal);
+      visiting.delete(id);
+      return signal;
+    }
     let spatial = def.spatial || item.kind === "noise" && !incoming.has(inputKey(id, "uv"));
     for (const [key, input] of Object.entries(def.inputs)) {
       const source = incoming.get(inputKey(id, key));
@@ -130,7 +193,7 @@ export function analyze(project: Project) {
       conversions.set(inputKey(id, key), label);
       spatial ||= upstream.spatial;
     }
-    const signal = { type: def.output, spatial };
+    const signal: Signal = { type: item.kind === "value" && item.params.type === "Integer" ? "integer" : def.output, spatial };
     signals.set(id, signal);
     visiting.delete(id);
     return signal;
@@ -141,35 +204,85 @@ export function analyze(project: Project) {
 
 export function connect(project: Project, edge: Edge): Project {
   const next = { ...project, edges: [...project.edges.filter(other => other.to !== edge.to || other.input !== edge.input), edge] };
-  analyze(next);
-  return next;
+  const { signals } = analyze(next);
+  return withJunctionTypes(next, signals);
+}
+
+export function withJunctionTypes(project: Project, signals = analyze(project).signals): Project {
+  return { ...project, nodes: project.nodes.map(node => {
+    if (node.kind !== "junction") return node;
+    const signal = signals.get(node.id)!;
+    return { ...node, params: { type: signal.type, spatial: signal.spatial } };
+  }) };
+}
+
+export function connectPorts(project: Project, a: Port, b: Port): Project | undefined {
+  const [from, to] = a.input ? [b, a] : [a, b];
+  if (from.input || !to.input || from.node === to.node) return;
+  try { return connect(project, { from: from.node, to: to.node, input: to.input }); }
+  catch (error) { if (!(error instanceof GraphError)) throw error; }
+}
+
+export function attachNode(project: Project, item: GraphNode, port: Port) {
+  if (item.kind === "output" && port.input) return;
+  if (port.input) return connectPorts(project, { node: item.id }, port);
+  const inputs = Object.entries(nodes[item.kind].inputs);
+  const signal = analyze(project).signals.get(port.node);
+  inputs.sort((a, b) => Number(b[1].type === signal?.type) - Number(a[1].type === signal?.type));
+  for (const [input] of inputs) {
+    const next = connectPorts(project, port, { node: item.id, input });
+    if (next) return next;
+  }
+}
+
+export function insertNode(project: Project, item: GraphNode, edge: Edge) {
+  if (item.kind === "output" || item.id === edge.from || item.id === edge.to) return;
+  const source = analyze(project).signals.get(edge.from);
+  const inputs = Object.entries(nodes[item.kind].inputs);
+  inputs.sort((a, b) => Number(b[1].type === source?.type) - Number(a[1].type === source?.type));
+  for (const [input] of inputs) {
+    const occupied = project.edges.find(link => link.to === item.id && link.input === input);
+    if (occupied && occupied.from !== edge.from) continue;
+    const next = { ...project, edges: project.edges.filter(link => link !== edge && link !== occupied).concat(
+      { from: edge.from, to: item.id, input }, { from: item.id, to: edge.to, input: edge.input },
+    ) };
+    try { return withJunctionTypes(next, analyze(next).signals); }
+    catch (error) { if (!(error instanceof GraphError)) throw error; }
+  }
 }
 
 export function projectFromJson(value: unknown): Project {
   if (!value || typeof value !== "object") throw new GraphError("Invalid compositor project.");
-  const data = value as Project;
-  if (data.version !== 1 || !Number.isFinite(data.bpm) || data.bpm < 1 || data.bpm > 480 ||
-      !Array.isArray(data.nodes) || !Array.isArray(data.edges)) {
+  const raw = value as Project;
+  if (raw.version !== 1 || !Number.isFinite(raw.bpm) || raw.bpm < 1 || raw.bpm > 480 ||
+      !Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) {
     throw new GraphError("Invalid compositor project.");
   }
-  for (const item of data.nodes) {
+  const validNodes = raw.nodes.map(item => {
     if (!item || typeof item.id !== "string" || !Object.hasOwn(nodes, item.kind) || !Number.isFinite(item.x) ||
         !Number.isFinite(item.y) || !item.params || typeof item.params !== "object") throw new GraphError("Invalid node.");
+    const params = normalizeParams(item.kind, item.params);
     for (const [key, parameter] of Object.entries(nodes[item.kind].parameters)) {
-      const parameterValue = item.params[key];
+      const parameterValue = params[key];
       if (typeof parameterValue !== typeof parameter.value ||
           (typeof parameterValue === "number" && !Number.isFinite(parameterValue)) ||
           (parameter.options && !parameter.options.includes(String(parameterValue)))) throw new GraphError("Invalid node parameter.", item.id);
     }
+    if (item.kind === "value" && params.type === "Integer" &&
+        (typeof params.value !== "number" || params.value !== roundInteger(params.value))) throw new GraphError("Invalid integer.", item.id);
     for (const [key, input] of Object.entries(nodes[item.kind].inputs)) {
-      const fallback = item.params["input:" + key];
-      if (fallback !== undefined && (typeof fallback !== typeof input.value ||
-          (typeof fallback === "number" && !Number.isFinite(fallback)))) throw new GraphError("Invalid input default.", item.id);
+      const fallback = params["input:" + key];
+      if (fallback === undefined) continue;
+      const valid = input.type === "color" ? isColorValue(fallback) : typeof fallback === typeof input.value &&
+        (typeof fallback !== "number" || (Number.isFinite(fallback) && (input.type !== "integer" || fallback === roundInteger(fallback))));
+      if (!valid) throw new GraphError("Invalid input default.", item.id);
     }
-  }
-  for (const edge of data.edges) {
+    return { ...item, params };
+  });
+  for (const edge of raw.edges) {
     if (!edge || typeof edge.from !== "string" || typeof edge.to !== "string" || typeof edge.input !== "string") throw new GraphError("Invalid cable.");
   }
+  const data = { ...raw, nodes: validNodes };
   analyze(data);
   return data;
 }

@@ -15,6 +15,7 @@ import { ignoreDropClick, liftMediaThumbnail, sidebarDrop } from "./node-sidebar
 import { makeTextureCatalog } from "./texture-catalog";
 import type { NodeDrop } from "./node-graph";
 import { phosphorIcon } from "./icons";
+import { fetchDefaultMedia } from "./default-media";
 
 type ViewMode = "edit" | "view";
 const FLIP_MS = 300;
@@ -63,8 +64,6 @@ function measureFlipRects(container: HTMLElement): Map<string, DOMRect> {
   return m;
 }
 
-/** Curated starter media, hosted on the static CDN (sources.json import/export shape). */
-const DEFAULTS_URL = "https://videoclip.picodevil.com/sources.json";
 /** The fetched defaults list, or null until the one-shot fetch resolves (or fails). */
 let defaultSources: SourceItem[] | null = null;
 let defaultSourcesRequest: Promise<SourceItem[]> | undefined;
@@ -108,10 +107,7 @@ export function setupMediaLoader(videos: HTMLElement, isFreshSession = false, te
   // just enables the "Defaults" button, shown only when it contains media not
   // already in the list — so a failed/blocked fetch loads nothing and the
   // button stays hidden.
-  defaultSourcesRequest = fetch(DEFAULTS_URL)
-    .then(res => res.ok ? res.json() : null)
-    .then((items: unknown) => Array.isArray(items) ? items as SourceItem[] : [])
-    .catch(() => []);
+  defaultSourcesRequest = fetchDefaultMedia().catch(() => []);
   void defaultSourcesRequest.then(items => {
       if (items.length === 0) return;
       defaultSources = items;

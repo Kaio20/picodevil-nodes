@@ -25,9 +25,13 @@ Then opening [http://localhost:5173/](http://localhost:5173/) in your browser.
 
 ## Live Compositor prototype
 
-Open **Compositor** in the classic editor or go to [localhost:5173/compositor/](http://localhost:5173/compositor/). The prototype needs hardware WebGPU. It starts with two local test videos, a procedural mask, and a beat-driven displacement. Drag videos from **Media** to the graph, use **Add Node** to search, and drag between sockets. Select a node to edit its controls and see its result. Right-click a cable or its input to disconnect it.
+Open **Compositor** in the classic editor or go to [localhost:5173/compositor/](http://localhost:5173/compositor/). The prototype needs hardware WebGPU. It starts with two local test videos, a procedural mask, and a beat-driven displacement. Edit controls on the nodes. The step grid and WGSL expression each have a pop-up. The sidebar contains Videos, Textures, microphone signals, and the node Reference.
 
-**Open Output** opens a separate window. Double-click its canvas for fullscreen. Click **Take** or press **Ctrl/Cmd+Enter** to send the current preview graph to that window. **Save** and **Open saved** keep one project and its imported videos in the current browser. The prototype has its own graph format.
+**Videos** includes the PicoDevil example library. Paste a direct media URL and press Enter, or use **Files** to browse for local videos. YouTube links use the companion server configured in the classic editor. **Webcam** and **Screen** add live video sources. Start capture again when reopening a saved graph that uses one of these sources.
+
+Use **Add Node** or right-click the graph to open the categorized search. Drag a socket to empty space for compatible nodes, or drag a node onto a cable to insert it. Double-click a cable for a reroute. Alt-click a socket or cable to disconnect it. The eye button opens a live preview on the node.
+
+**Open Output** opens a separate window and starts the first valid live graph. Double-click its canvas for fullscreen. Click **Take** or press **Ctrl/Cmd+Enter** to send later edits to the live window. **Save** and **Open saved** keep one project and its imported videos in the current browser. The prototype has its own graph format.
 
 Run `npm run test:compositor` with Vite running and Google Chrome installed. The performance comparison and native runner are documented in [the benchmark notes](bench/compositor-native/README.md).
 

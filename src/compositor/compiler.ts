@@ -1,4 +1,5 @@
-import { analyze, GraphError, inputKey, nodes, type GraphNode, type Project, type SocketType } from "./graph";
+import { isColorValue, rgbFromHex, type ColorValue } from "../color-value";
+import { analyze, audioBands, GraphError, inputKey, nodes, roundInteger, typeNames, type GraphNode, type Project, type SocketType } from "./graph";
 
 export interface ShaderPass {
   id: string;
@@ -37,7 +38,9 @@ fn blend(bg: vec4f, src: vec4f, amount: f32, mode: i32) -> vec4f {
 }
 `;
 
-const wgslType: Record<SocketType, string> = { image: "vec4f", color: "vec4f", float: "f32", bool: "bool", vec2: "vec2f" };
+type ShaderType = Exclude<SocketType, "string" | "text">;
+const wgslType: Record<ShaderType, string> = { image: "vec4f", color: "vec4f", float: "f32", integer: "i32", bool: "bool", vec2: "vec2f" };
+const zero: Record<ShaderType, string> = { image: "vec4f(0.0)", color: "vec4f(0.0)", float: "0.0", integer: "0i", bool: "false", vec2: "vec2f(0.0)" };
 const expressionWords = new Set(("a b uv time x y xy yx xx yy r g sin cos tan asin acos atan atan2 abs floor ceil round fract min max pow sqrt exp log exp2 log2 clamp mix step smoothstep sign length distance dot normalize f32 vec2f pi").split(" "));
 
 function validateExpression(text: string, id: string) {
@@ -53,17 +56,15 @@ function validateExpression(text: string, id: string) {
   return expression;
 }
 
-function color(hex: string, alpha = 1): number[] {
-  if (!/^#[0-9a-f]{6}$/i.test(hex)) throw new Error("Expected a six-digit hex color.");
-  const a = Math.min(1, Math.max(0, alpha));
-  const rgb = [1, 3, 5].map(start => parseInt(hex.slice(start, start + 2), 16) / 255)
-    .map(channel => a * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
-  return [...rgb, a];
+function linearColor({ hex, alpha }: ColorValue): number[] {
+  const rgb = rgbFromHex(hex).map(channel => alpha * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  return [...rgb, alpha];
 }
 
 function visualize(expression: string, type: SocketType) {
   if (type === "bool") return `vec4f(vec3f(select(0.0, 1.0, ${expression})), 1.0)`;
   if (type === "float") return `vec4f(vec3f(${expression}), 1.0)`;
+  if (type === "integer") return visualize(`f32(${expression})`, "float");
   if (type === "vec2") return `vec4f(${expression}, 0.0, 1.0)`;
   return expression;
 }
@@ -82,6 +83,10 @@ export function compile(project: Project, target?: string): Plan {
       media[id] = String(item.params.asset);
       return id;
     }
+    if (item.kind === "junction" && signals.get(id)!.type === "image") {
+      const source = incoming.get(inputKey(id, "in"));
+      if (source) return imagePass(source.from);
+    }
     if (item.kind === "output") {
       const source = incoming.get(inputKey(id, "image"));
       if (!source) throw new GraphError("Connect an image to Output.", id);
@@ -89,7 +94,7 @@ export function compile(project: Project, target?: string): Plan {
     }
     if (passes.has(id)) return id;
     const textures: string[] = [];
-    const uniforms = [0, 0, 0, 0];
+    const uniforms = [0, 0, 0, 0, 0, 0, 0, 0];
     const functions = new Map<string, { name: string; body: string }>();
     const definitions: { id: string; text: string }[] = [];
     function param(...values: number[]): string {
@@ -97,6 +102,13 @@ export function compile(project: Project, target?: string): Plan {
       const index = uniforms.length / 4;
       uniforms.push(...values, ...Array<number>(4 - values.length).fill(0));
       return `frame.data[${index}]`;
+    }
+    function integer(value: number): string {
+      if (value !== roundInteger(value)) throw new GraphError("Invalid integer.", id);
+      // Keep both halves exact in the existing f32 uniform buffer.
+      const high = Math.floor(value / 65536);
+      const pair = param(high, value - high * 65536);
+      return `(i32(${pair}.x) * 65536i + i32(${pair}.y))`;
     }
     function sample(source: string, uv: string): string {
       let index = textures.indexOf(source);
@@ -106,6 +118,11 @@ export function compile(project: Project, target?: string): Plan {
     function read(sourceId: string, uv = "uv", inlineImage = false): string {
       const source = byId.get(sourceId)!;
       const type = signals.get(sourceId)!.type;
+      if (type === "string" || type === "text") throw new GraphError(`${typeNames[type]} cannot be previewed as a shader value.`, sourceId);
+      if (source.kind === "junction") {
+        const cable = incoming.get(inputKey(source.id, "in"));
+        return cable ? read(cable.from, uv) : zero[type];
+      }
       if (type === "image" && !inlineImage) return sample(imagePass(sourceId), uv);
       let fn = functions.get(sourceId);
       if (!fn) {
@@ -133,7 +150,11 @@ export function compile(project: Project, target?: string): Plan {
           if (port.type === "image") return "vec4f(0.0)";
           if (port.type === "vec2" && port.value === undefined) return uv;
           const value = p["input:" + key] ?? port.value;
-          if (port.type === "color") return param(...color(String(value)));
+          if (port.type === "color") {
+            if (!isColorValue(value)) throw new GraphError("Invalid color.", item.id);
+            return param(...linearColor(value));
+          }
+          if (port.type === "integer") return integer(Number(value));
           const v = `${param(Number(value))}.x`;
           if (port.type === "bool") return `(${v} != 0.0)`;
           return port.type === "vec2" ? `vec2f(${v})` : v;
@@ -141,14 +162,20 @@ export function compile(project: Project, target?: string): Plan {
         const type = signals.get(cable.from)!.type;
         const v = read(cable.from, uv);
         if (type === port.type || (type === "color" && port.type === "image")) return v;
-        if (port.type === "bool") return `(${v} != 0.0)`;
-        if (port.type === "vec2") return `vec2f(${v})`;
-        if (port.type === "color") return visualize(v, "float");
+        if (type === "integer" && port.type === "float") return `f32(${v})`;
+        const scalar = type === "integer" ? `f32(${v})` : v;
+        if (port.type === "bool") return `(${scalar} != 0.0)`;
+        if (port.type === "vec2") return `vec2f(${scalar})`;
+        if (port.type === "color") return visualize(scalar, "float");
         return type === "bool" ? `select(0.0, 1.0, ${v})` : `luma(${v})`;
       };
       const result = (value: string) => `return ${value};`;
       switch (item.kind) {
         case "output": return result(input("image"));
+        case "texture":
+          media[item.id] = String(p.asset);
+          return `let pixel = ${sample(item.id, "uv")}; return vec4f(pixel.rgb * pixel.a, pixel.a);`;
+        case "audio": return result(`frame.data[1][${audioBands.indexOf(String(p.band))}]`);
         case "merge": return result(`blend(${input("background")}, ${input("foreground")}, ${input("factor")}, ${["Normal", "Multiply", "Screen"].indexOf(String(p.mode))})`);
         case "mask": return result(`${input("image")} * clamp(${input("mask")}, 0.0, 1.0)`);
         case "alpha": return result(`${input("image")}.a`);
@@ -156,10 +183,10 @@ export function compile(project: Project, target?: string): Plan {
           const shift = `uv + ${input("offset")} * ${input("strength")}`;
           return result(input("image", shift));
         }
-        case "value": return result(`${param(Number(p.value))}.x`);
+        case "value": return result(p.type === "Integer" ? integer(Number(p.value)) : `${param(Number(p.value))}.x`);
         case "boolean": return result(`${param(Number(p.value))}.x != 0.0`);
         case "switch": return result(`select(${input("inactive")}, ${input("active")}, ${input("condition")})`);
-        case "color": return result(param(...color(String(p.color), Number(p.alpha))));
+        case "color": return result(input("color"));
         case "mixColor": return result(`mix(${input("a")}, ${input("b")}, clamp(${input("factor")}, 0.0, 1.0))`);
         case "uv": return result("uv");
         case "vector": return result(`vec2f(${input("x")}, ${input("y")})`);
@@ -174,8 +201,7 @@ export function compile(project: Project, target?: string): Plan {
         }
         case "ramp": {
           const positions = param(Number(p.from), Number(p.to));
-          const low = param(...color(String(p.low))), high = param(...color(String(p.high)));
-          return result(`mix(${low}, ${high}, clamp(divide(${input("factor")} - ${positions}.x, ${positions}.y - ${positions}.x), 0.0, 1.0))`);
+          return result(`mix(${input("low")}, ${input("high")}, clamp(divide(${input("factor")} - ${positions}.x, ${positions}.y - ${positions}.x), 0.0, 1.0))`);
         }
         case "expression": {
           const expr = validateExpression(String(p.code), item.id);
@@ -193,7 +219,8 @@ export function compile(project: Project, target?: string): Plan {
           const division = param(Number(p.division));
           return `let steps = array<f32, ${steps.length}>(${values.join(", ")});\nreturn steps[u32(floor(frame.data[0].y * ${division}.x)) % ${steps.length}u];`;
         }
-        case "video": throw new GraphError("Video is sampled as a texture.", item.id);
+        case "video":
+        case "junction": throw new GraphError("Node is resolved before shader evaluation.", item.id);
       }
     }
     const final = visualize(read(id, "uv", true), signals.get(id)!.type);

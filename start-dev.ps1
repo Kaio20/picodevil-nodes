@@ -10,8 +10,14 @@ if (-not $npm -or -not (Get-Command node.exe -CommandType Application -ErrorActi
 
 Push-Location -LiteralPath $PSScriptRoot
 try {
-    if (-not (Test-Path -LiteralPath 'node_modules/.bin/vite.cmd' -PathType Leaf)) {
-        & $npm.Source ci
+    $needsInstall = -not (Test-Path -LiteralPath 'node_modules/.bin/vite.cmd' -PathType Leaf)
+    if (-not $needsInstall) {
+        & $npm.Source ls --depth=0 --include=dev --silent *> $null
+        $needsInstall = $LASTEXITCODE -ne 0
+    }
+
+    if ($needsInstall) {
+        & $npm.Source ci --include=dev
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }

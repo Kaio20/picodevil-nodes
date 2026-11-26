@@ -1,7 +1,8 @@
 import { compile } from "./compiler";
 import { type FrameTime, type PreparedPlan, Renderer, type Surface } from "./gpu";
-import { demo, GraphError, type Project } from "./graph";
+import { GraphError, type Project } from "./graph";
 import { Media } from "./media";
+import { AudioInput } from "./audio";
 
 const WIDTH = 1920, HEIGHT = 1080;
 export interface Metrics {
@@ -10,6 +11,14 @@ export interface Metrics {
 }
 interface Candidate { project: Project; program?: PreparedPlan; viewer?: PreparedPlan; viewerShowsOutput: boolean; error?: Error; viewerError?: Error }
 interface Take { project: Project; program: PreparedPlan }
+interface Output {
+  window: Window;
+  context: CanvasRenderingContext2D;
+  stage: HTMLCanvasElement;
+  surface: Surface;
+  status: HTMLElement;
+  presented: boolean;
+}
 
 export class Transport {
   private readonly start = performance.now();
@@ -44,10 +53,12 @@ export class Transport {
 
 export class Session {
   readonly media: Media;
+  readonly audio = new AudioInput();
   readonly transport = new Transport();
   metrics?: Metrics;
   previewEnabled = true;
   onChange?: () => void;
+  onPreview?: (beats: number, audio: readonly number[]) => void;
   message = "";
   draft?: Candidate;
   live?: Take;
@@ -59,8 +70,10 @@ export class Session {
   private outputAt = 0;
   private deviceLost = false;
   private frame?: { host: Window; id: number };
-  private output?: { window: Window; surface: Surface };
+  private output?: Output;
+  private startOnOpen?: () => boolean;
   private readonly viewer: Surface;
+  private mini?: { canvas: HTMLCanvasElement; surface: Surface };
 
   constructor(readonly renderer: Renderer, canvas: HTMLCanvasElement) {
     this.viewer = renderer.surface(canvas);
@@ -74,14 +87,21 @@ export class Session {
         this.syncMedia();
       }
       this.message = message;
+      this.updateOutputStatus();
       this.onChange?.();
     };
     renderer.device.lost.then(info => {
       this.deviceLost = true;
       this.message = `WebGPU device lost: ${info.message}. Reload the editor.`;
+      this.updateOutputStatus();
       this.onChange?.();
     });
     document.addEventListener("visibilitychange", this.reschedule);
+    window.addEventListener("pagehide", () => {
+      this.audio.stop();
+      this.media.stopCaptures();
+      this.output?.window.close();
+    });
     this.schedule();
   }
 
@@ -104,7 +124,7 @@ export class Session {
     const prepare = async (target?: string, width = WIDTH, height = HEIGHT) => {
       const plan = compile(project, target);
       for (const [id, asset] of Object.entries(plan.media)) {
-        if (!Object.hasOwn(demo, asset) && !this.media.assets.has(asset)) throw new GraphError("Video source is missing. Select or import a clip.", id);
+        if (!this.media.has(asset)) throw new GraphError("Media source is missing. Select or import an asset.", id);
       }
       return this.renderer.prepare(plan, width, height);
     };
@@ -125,17 +145,35 @@ export class Session {
     this.preparing = false;
     this.release(prior?.program, prior?.viewer);
     this.syncMedia();
+    this.tryStartOutput();
+    this.updateOutputStatus();
     this.onChange?.();
   }
 
   take() {
     if (this.preparing || !this.draft?.program) return false;
-    const broken = Object.values(this.draft.program.plan.media).find(asset => this.media.failed.has(asset));
-    if (broken) { this.message = `Cannot decode ${this.media.name(broken)}.`; this.onChange?.(); return false; }
+    const assets = Object.values(this.draft.program.plan.media);
+    const stopped = assets.find(asset => this.media.isCapture(asset) && !this.media.captureActive(asset));
+    if (stopped) {
+      this.message = `Start ${this.media.name(stopped)} in Videos before Take.`;
+      this.updateOutputStatus();
+      this.onChange?.();
+      return false;
+    }
+    const broken = assets.find(asset => this.media.failed.has(asset));
+    if (broken) {
+      this.message = `Cannot decode ${this.media.name(broken)}.`;
+      this.updateOutputStatus();
+      this.onChange?.();
+      return false;
+    }
     const previous = this.pending?.program;
+    this.message = "";
+    this.startOnOpen = undefined;
     this.pending = { project: this.draft.project, program: this.draft.program };
     this.release(previous);
     this.syncMedia();
+    this.updateOutputStatus();
     this.onChange?.();
     return true;
   }
@@ -150,46 +188,106 @@ export class Session {
     this.media.use(new Set(active.flatMap(item => item ? Object.values(item.plan.media) : [])));
   }
 
-  openOutput() {
+  setMini(canvas?: HTMLCanvasElement) {
+    if (canvas === this.mini?.canvas) return;
+    this.mini?.surface.context.unconfigure();
+    this.mini = canvas ? { canvas, surface: this.renderer.surface(canvas) } : undefined;
+  }
+
+  openOutput(draftIsCurrent: () => boolean) {
     if (this.output && !this.output.window.closed) { this.output.window.focus(); return true; }
-    const popup = window.open("", "nodesdevil-compositor-output", "popup,width=960,height=540");
+    this.detachOutput();
+    const popup = window.open("", "_blank", "popup,width=960,height=540");
     if (!popup) return false;
+    let output: Output;
+    try {
+      const canvas = popup.document.createElement("canvas");
+      const stage = document.createElement("canvas");
+      canvas.width = stage.width = WIDTH;
+      canvas.height = stage.height = HEIGHT;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("Could not configure the output canvas.");
+      // Keep the GPU surface in the editor's document and present its frames in the popup.
+      output = { window: popup, context, stage, surface: this.renderer.surface(stage), status: popup.document.createElement("p"), presented: false };
+    } catch (error) {
+      popup.close();
+      throw error;
+    }
+    const { canvas } = output.context;
     popup.document.title = "NodesDevil Live Output";
     popup.document.body.style.cssText = "margin:0;background:#000;display:grid;place-items:center;height:100vh;overflow:hidden";
-    const canvas = popup.document.createElement("canvas");
-    canvas.width = WIDTH;
-    canvas.height = HEIGHT;
     canvas.style.cssText = "width:100%;height:100%;object-fit:contain;display:block";
     canvas.setAttribute("aria-label", "Live Output. Double-click for fullscreen.");
-    popup.document.body.replaceChildren(canvas);
+    output.status.style.cssText = "position:fixed;top:50%;left:1rem;right:1rem;margin:0;transform:translateY(-50%);color:#ddd;font:15px system-ui;text-align:center";
+    output.status.setAttribute("role", "status");
+    popup.document.body.replaceChildren(canvas, output.status);
     canvas.addEventListener("dblclick", () => {
       const operation = popup.document.fullscreenElement ? popup.document.exitFullscreen() : canvas.requestFullscreen();
       void operation.catch(() => {});
     });
-    popup.addEventListener("pagehide", this.reschedule);
+    popup.addEventListener("pagehide", () => {
+      if (this.output !== output) return;
+      this.detachOutput();
+      this.reschedule();
+    }, { once: true });
     popup.document.addEventListener("visibilitychange", this.reschedule);
-    this.output = { window: popup, surface: this.renderer.surface(canvas) };
+    this.output = output;
+    this.startOnOpen = !this.live && !this.pending ? draftIsCurrent : undefined;
+    this.tryStartOutput();
+    this.updateOutputStatus();
     this.reschedule();
     return true;
   }
 
+  private tryStartOutput() {
+    if (!this.startOnOpen?.() || this.preparing || !this.draft) return;
+    this.startOnOpen = undefined;
+    if (this.output && !this.output.window.closed && !this.live && !this.pending) this.take();
+  }
+
+  private updateOutputStatus() {
+    const output = this.output;
+    if (!output || output.window.closed) return;
+    output.status.hidden = output.presented && !this.deviceLost;
+    if (output.status.hidden) return;
+    const message = this.message || (this.pending ? "Waiting for the live sources…" :
+      this.startOnOpen || this.preparing || this.live ? "Preparing live output…" :
+      this.draft?.error?.message ?? "Press Take in the editor to start the live output.");
+    if (output.status.textContent !== message) output.status.textContent = message;
+  }
+
+  private detachOutput() {
+    this.output?.surface.context.unconfigure();
+    this.output = undefined;
+    this.startOnOpen = undefined;
+  }
+
   private reschedule = () => {
-    if (this.frame) this.frame.host.cancelAnimationFrame(this.frame.id);
+    if (this.frame && !this.frame.host.closed) this.frame.host.cancelAnimationFrame(this.frame.id);
+    this.frame = undefined;
     this.schedule();
   };
 
   private schedule() {
-    if (this.deviceLost) return;
-    if (this.output?.window.closed) this.output = undefined;
+    if (this.deviceLost || this.frame) return;
+    if (this.output?.window.closed) this.detachOutput();
     const host = this.output && !this.output.window.document.hidden ? this.output.window : window;
-    this.frame = { host, id: host.requestAnimationFrame(() => {
+    const frame = { host, id: 0 };
+    frame.id = host.requestAnimationFrame(() => {
+      if (this.frame !== frame) return;
+      this.frame = undefined;
       try { this.tick(performance.now()); }
       catch (issue) {
         const message = issue instanceof Error ? issue.message : String(issue);
-        if (message !== this.message) { this.message = message; this.onChange?.(); }
+        if (message !== this.message) {
+          this.message = message;
+          this.updateOutputStatus();
+          this.onChange?.();
+        }
       }
       this.schedule();
-    }) };
+    });
+    this.frame = frame;
   }
 
   private tick(now: number) {
@@ -209,14 +307,16 @@ export class Session {
       this.syncMedia();
       this.onChange?.();
     }
-    const time = this.transport.at(now);
+    const audio = this.audio.values();
+    const time = { ...this.transport.at(now), audio };
     const encoder = this.renderer.device.createCommandEncoder();
+    const popup = this.output && !this.output.window.closed && !this.output.window.document.hidden ? this.output : undefined;
     let drew = false;
     let output: GPUTexture | undefined;
     const liveStart = performance.now();
     if (this.live) {
       output = this.renderer.draw(encoder, this.live.program, time, this.media.texture);
-      if (this.output) this.renderer.show(encoder, this.output.surface, output);
+      if (popup) this.renderer.show(encoder, popup.surface, output);
       if (metrics) {
         metrics.program.push(performance.now() - liveStart);
         metrics.outputFrames++;
@@ -228,20 +328,30 @@ export class Session {
     const viewer = this.draft?.viewer;
     if (viewer && this.previewEnabled && !document.hidden && this.busy === 0 && now >= this.previewAt && performance.now() - start < 8) {
       const begin = performance.now();
+      const previewTime = this.transport.preview(now);
       const image = output && this.draft?.viewerShowsOutput && this.draft.project === this.live?.project
-        ? output : this.renderer.draw(encoder, viewer, this.transport.preview(now), this.media.texture);
+        ? output : this.renderer.draw(encoder, viewer, { ...previewTime, audio }, this.media.texture);
       this.renderer.show(encoder, this.viewer, image);
+      if (this.mini && !this.preparing) this.renderer.show(encoder, this.mini.surface, image);
+      this.onPreview?.(previewTime.beats, audio);
       this.previewAt = now + 31;
       metrics?.preview.push(performance.now() - begin);
       drew = true;
     }
     if (drew) {
       this.renderer.device.queue.submit([encoder.finish()]);
-      metrics?.work.push(performance.now() - start);
       this.busy++;
       void this.renderer.device.queue.onSubmittedWorkDone().then(() => {
         if (metrics && this.metrics === metrics) metrics.completion.push(performance.now() - start);
       }, () => {}).finally(() => this.busy--);
+      if (popup && output) {
+        popup.context.drawImage(popup.stage, 0, 0);
+        if (!popup.presented) {
+          popup.presented = true;
+          this.updateOutputStatus();
+        }
+      }
+      metrics?.work.push(performance.now() - start);
     }
   }
 }
