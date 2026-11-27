@@ -7,5 +7,6 @@
  */
 export function eventBeginFromHap(ev: any, hap: any, t: number): number {
   if (ev.sync != null || ev.rolling != null) return 0;
+  if (ev._playlistStart !== undefined) return ev._playlistStart;
   return Number(hap?.whole?.begin ?? t);
 }

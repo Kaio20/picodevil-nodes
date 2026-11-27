@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { Locator, Page } from "playwright";
-import { seedMedia, startHarness } from "./harness";
+import { diffPixels, renderAndSettle, seedMedia, startHarness } from "./harness";
+import { examples } from "../src/examples";
 
 async function center(locator: Locator) {
   for (let attempt = 0; attempt < 10; attempt++) {
@@ -51,7 +52,7 @@ async function waitPixel(canvas: Locator, test: (rgba: number[]) => boolean) {
   assert.fail("Canvas did not reach expected color: " + rgba);
 }
 
-const { page, url, close } = await startHarness({
+const { browser, page, url, close } = await startHarness({
   headless: !process.argv.includes("--headed"),
   viewport: { width: 1600, height: 900 },
   pinMediaToOrigin: true,
@@ -129,7 +130,7 @@ try {
   assert.equal(await page.locator(".nd-drop-ghost").isVisible(), false);
   await page.mouse.up();
   assert.equal(await dragPreview.count(), 0);
-  const source = page.locator('[data-kind="media"]');
+  const source = page.locator('[data-kind="video"]');
   await source.waitFor();
   assert.equal(await source.count(), 1);
   assert.equal(await page.locator(".nd-wire-hit").count(), 1);
@@ -317,8 +318,13 @@ try {
 
   await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("Output");
-  assert.equal(await nodeResults.getByRole("button", { name: "Output", exact: true }).count(), 0);
-  await cableSearch.press("Escape");
+  assert.equal(await nodeResults.getByRole("button", { name: "Output", exact: true }).count(), 1);
+  await cableSearch.clear();
+  const outputCategory = page.locator('.nd-menu-category[data-category="Output"]');
+  assert.equal(await outputCategory.evaluate(category => (category.nextElementSibling as HTMLElement)?.dataset.category), "Variables");
+  await outputCategory.click();
+  assert.equal(await page.locator('[data-kind="output"]').count(), 2);
+  await undo.click();
 
   const outputs = page.locator('[data-kind="output"]');
   const originalOutput = outputs.first();
@@ -588,7 +594,7 @@ try {
     break;
   }
   await source.getByRole("button", { name: "Preview nodes-red-renamed" }).waitFor();
-  await hoverTooltip(source.getByRole("combobox", { name: "Media" }), /^nodes-red-renamed\nVideo$/);
+  await hoverTooltip(source.getByRole("combobox", { name: "Video 1" }), /^nodes-red-renamed\nVideo$/);
   const mediaRow = page.locator(".vid-row").filter({ has: page.locator('[title=\'Insert "nodes-red-renamed"\']') });
   await drag(page, mediaRow.locator(".vid-thumb"), { x: graph.x + 210, y: graph.y + 570 });
   assert.equal(await source.count(), 2);
@@ -598,6 +604,33 @@ try {
   await source.getByRole("button", { name: "Preview nodes-red-renamed" }).waitFor();
   assert.equal(await page.locator(".nd-node").count(), 5);
   assert.equal(await page.locator(".nd-preview").count(), 4);
+  const playbackMode = source.getByRole("combobox", { name: "Video playback" });
+  assert.equal(await playbackMode.getAttribute("data-value"), "clipEnd");
+  await source.getByRole("button", { name: "Add video" }).click();
+  await source.getByRole("combobox", { name: "Video 2" }).waitFor();
+  assert.equal(await source.locator('[data-input="clip-2"]').getAttribute("data-type"), "text");
+  await playbackMode.click();
+  assert.deepEqual(await source.getByRole("option").allTextContents(), ["Until Clip Ends", "List per Cycle", "One Video per Cycle"]);
+  await source.getByRole("option", { name: "One Video per Cycle" }).click();
+  assert.equal(await playbackMode.getAttribute("data-value"), "clipPerCycle");
+  await undo.click();
+  await undo.click();
+  assert.equal(await source.getByRole("combobox", { name: "Video 2" }).count(), 0);
+  await page.getByRole("button", { name: "Add Node" }).click();
+  await cableSearch.fill("Index");
+  await nodeResults.getByRole("button", { name: "Index", exact: true }).click();
+  const indexNode = page.locator('[data-kind="index"]');
+  await indexNode.getByRole("button", { name: "Add image" }).click();
+  await indexNode.getByRole("button", { name: "Add image" }).click();
+  assert.equal(await indexNode.locator('[data-input="image-3"]').getAttribute("data-type"), "visual");
+  await undo.click();
+  await undo.click();
+  await undo.click();
+  const tempo = page.getByRole("spinbutton", { name: "Tempo (CPM)" });
+  await tempo.fill("60");
+  await tempo.press("Tab");
+  await page.waitForFunction(() => (window as any).pdLiveFrame?.cps === 1);
+  await undo.click();
   await page.locator('button[data-tab="audio"]').click();
   await drag(page, page.locator(".nd-audio-signals").getByText("Bass", { exact: true }), { x: graph.x + 240, y: graph.y + 508 });
   const fft = page.locator('[data-kind="fft"]');
@@ -648,8 +681,8 @@ try {
   assert.equal(await rate.locator(".nd-connected").count(), connections);
   await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("Slow Signal");
-  await page.getByRole("button", { name: "Signal Rate · Slow", exact: true }).click();
-  assert.equal(await page.locator('[data-kind="signalRate"]').last().getByRole("combobox", { name: "Mode" }).getAttribute("data-value"), "slow");
+  await nodeResults.getByText("No matching nodes").waitFor();
+  await cableSearch.press("Escape");
 
   const handwriting = page.locator('[data-kind="fontHandwriting"]');
   await hoverTooltip(handwriting.locator(".nd-node-title"), /Bounce, Informality, and Spacing in Shantell Sans/);
@@ -697,9 +730,9 @@ try {
   await page.getByRole("button", { name: "Add Node" }).click();
   const categoryColors = await page.locator(".nd-menu-category[data-category]").evaluateAll(headings =>
     headings.map(heading => getComputedStyle(heading).backgroundColor));
-  assert.equal(categoryColors.length, 8);
-  assert.equal(new Set(categoryColors).size, 8);
-  assert.equal(await page.locator(".nd-menu-icon").count(), 8);
+  assert.equal(categoryColors.length, 9);
+  assert.equal(new Set(categoryColors).size, 9);
+  assert.equal(await page.locator(".nd-menu-icon").count(), 9);
   assert.equal(await nodeResults.isVisible(), false);
   const signals = page.locator(".nd-menu-category[data-category=Signals]");
   const imageCategory = page.locator(".nd-menu-category[data-category=Image]");
@@ -747,7 +780,16 @@ try {
   await page.locator(".nd-menu-category[data-category=Expressions]").click();
   const expressionOptions = nodeResults.getByRole("button", { name: /^(Add|Subtract|Multiply|Divide|Remainder|Minimum|Maximum)$/ });
   assert.deepEqual(await expressionOptions.allTextContents(), ["Add", "Subtract", "Multiply", "Divide", "Remainder", "Minimum", "Maximum"]);
-  await nodeResults.getByRole("button", { name: "Multiply", exact: true }).click();
+  for (const [symbol, label] of [
+    ["+", "Add"], ["-", "Subtract"], ["−", "Subtract"], ["×", "Multiply"],
+    ["·", "Multiply"], ["⋅", "Multiply"], ["/", "Divide"], [":", "Divide"],
+    ["÷", "Divide"], ["∶", "Divide"], ["%", "Remainder"], [" * ", "Multiply"],
+  ]) {
+    await cableSearch.fill(symbol);
+    assert.equal(await nodeResults.getByRole("button").first().getAttribute("data-tooltip"), label);
+  }
+  await nodeResults.getByRole("button", { name: "Blend · Multiply", exact: true }).waitFor();
+  await cableSearch.press("Enter");
   const expression = page.locator('[data-kind="expression"]');
   const expressionMode = expression.getByRole("combobox", { name: "Mode" });
   assert.equal(await expressionMode.getAttribute("data-value"), "multiply");
@@ -782,7 +824,7 @@ try {
   await nodeResults.getByRole("button", { name: "Variable", exact: true }).click();
   const variable = page.locator('[data-kind="variable"]');
   const variableTitle = variable.locator(".nd-node-title");
-  assert.equal(await variableTitle.innerText(), "Get Variable");
+  assert.equal(await variableTitle.textContent(), "Get Enabled");
   const variablePicker = variable.getByRole("combobox", { name: "Variable" });
   assert.equal(await variablePicker.innerText(), "Enabled");
   const variableInput = page.getByRole("button", { name: "Variable Set Value (boolean)", exact: true });
@@ -793,9 +835,9 @@ try {
   await variableInput.press("Enter");
   await cableSearch.fill("Constant");
   await nodeResults.getByRole("button", { name: "Constant · Boolean", exact: true }).click();
-  assert.equal(await variableTitle.innerText(), "Set Variable");
+  assert.equal(await variableTitle.textContent(), "Set Enabled");
   await variableInput.dispatchEvent("contextmenu");
-  assert.equal(await variableTitle.innerText(), "Get Variable");
+  assert.equal(await variableTitle.textContent(), "Get Enabled");
   assert.equal(await axisTag.inputValue(), "TEST");
 
   const portColors = await page.locator(".nd-port").evaluateAll(ports => ports.map(port => {
@@ -1370,8 +1412,126 @@ try {
   assert.equal(await conversionInput.getAttribute("data-type"), "number");
   assert.equal(await conversionOutput.getAttribute("data-type"), "boolean");
 
+  const textValue = `It's a "draft". C:\\media`;
+  await page.evaluate(origin => {
+    const key = "nodesdevil-session-v1";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const media = { id: "export-blue", name: "export-blue", url: `${origin}/test-assets/blue.png`, type: "image" };
+    const output = { id: "export-output", kind: "output", x: 390, y: 100, data: {} };
+    const edges = [{ from: "export-source", to: output.id, input: "image" }];
+    const live = { nodes: [{ id: "export-source", kind: "color", x: 60, y: 100, data: { color: { hex: "#ff0000", alpha: 1 } } }, output], edges, variables: [] };
+    const draft = {
+      nodes: [
+        { ...live.nodes[0], kind: "media", data: { media: media.id } },
+        { id: "export-position", kind: "position", x: 390, y: 100, data: { x: 0.55, y: 0.45 } },
+        { ...output, x: 700 },
+        { id: "export-text", kind: "text", x: 390, y: 400, data: {} },
+        { id: "export-text-position", kind: "position", x: 700, y: 400, data: { x: 0.2, y: 0.9 } },
+        { ...output, id: "export-text-output", x: 1010, y: 400 },
+      ],
+      edges: [
+        { from: "export-source", to: "export-position", input: "image" },
+        { from: "export-position", to: output.id, input: "image" },
+        { from: "export-text", to: "export-text-position", input: "image" },
+        { from: "export-text-position", to: "export-text-output", input: "image" },
+      ],
+      variables: [],
+    };
+    const view = { x: 0, y: 0, zoom: 1, previews: [] };
+    localStorage.setItem(key, JSON.stringify({ ...session, draft, live, media: [media], view }));
+  }, url);
+  await page.reload();
+  const exportSource = page.locator('[data-node-id="export-source"]');
+  const originalCard = (await exportSource.elementHandle())!;
+  const originalWire = (await wires.first().elementHandle())!;
+  const originalCurve = await originalWire.getAttribute("d");
+  const exportTitle = await center(exportSource.locator(".nd-node-head"));
+  await drag(page, exportSource.locator(".nd-node-head"), { x: exportTitle.x + 35, y: exportTitle.y + 50 });
+  assert(await originalCard.evaluate(node => node.isConnected));
+  assert(await originalWire.evaluate(node => node.isConnected));
+  assert.notEqual(await originalWire.getAttribute("d"), originalCurve);
+  await undo.click();
+  assert.equal(await originalWire.getAttribute("d"), originalCurve);
+
+  await page.getByRole("button", { name: "Add Node", exact: true }).click();
+  await cableSearch.fill("Brightness");
+  await nodeResults.getByRole("button", { name: "Brightness", exact: true }).click();
+  const textContent = page.locator('[data-node-id="export-text"] input');
+  await textContent.fill(textValue);
+  assert(await originalCard.evaluate(node => node.isConnected));
+  assert(await originalWire.evaluate(node => node.isConnected));
+
+  const codeLines = page.locator("#editor-wrap .cm-line");
+  await page.getByRole("button", { name: "Export Code", exact: true }).click();
+  const code = (await codeLines.allTextContents()).join("\n");
+  assert.match(code, /\$: s\("export-blue"\)\s+\.x\(0\.55\)\s+\.y\(0\.45\)/);
+  assert.match(code, /\$: text\('/);
+  assert.doesNotMatch(code, /nodeGraph|brightness/);
+
+  const outputColor = async (target: Page, channel: number) => {
+    await target.waitForFunction(channel => {
+      const source = document.querySelector<HTMLCanvasElement>("#c")!;
+      (window as any).pdRenderAt(0, 0.5);
+      const sample = document.createElement("canvas");
+      sample.width = sample.height = 1;
+      const ctx = sample.getContext("2d")!;
+      ctx.drawImage(source, source.width / 2, source.height / 2, 1, 1, 0, 0, 1, 1);
+      const pixels = ctx.getImageData(0, 0, 1, 1).data;
+      return pixels[channel] > 220 && pixels[2 - channel] < 30;
+    }, channel);
+  };
+  await outputColor(page, 0);
+  await page.waitForFunction(() => location.hash.startsWith("#v1,"));
+  const paste = await browser.newPage();
+  try {
+    await paste.goto(url);
+    await paste.locator(".nd-node").first().waitFor();
+    await paste.evaluate(code => window.pdSetCode(code, true), code);
+    await outputColor(paste, 2);
+    await paste.goto(page.url());
+    await paste.reload();
+    await outputColor(paste, 2);
+  } finally {
+    await paste.close();
+  }
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await textContent.fill("Latest draft");
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  assert.equal((await codeLines.allTextContents()).join("\n"), code);
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await page.getByRole("button", { name: "Export Code", exact: true }).click();
+  assert.match((await codeLines.allTextContents()).join("\n"), /Latest draft/);
+
+  const spaceTv = examples.find(example => example.name === "space_tv")!;
+  const examplePage = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  try {
+    await examplePage.route("**/videoclip.picodevil.com/sources.json", route => route.fulfill({ json: [] }));
+    await examplePage.goto(url);
+    await examplePage.locator(".nd-node").first().waitFor();
+    await seedMedia(examplePage, spaceTv.media!.map(name => ({ name, url: `${url}/test-assets/${name === "scanlines" ? "blue.png" : "red.png"}` })));
+    const toggle = examplePage.locator("#sidebar-toggle");
+    if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+    await examplePage.locator('button[data-tab="examples"]').click();
+    await examplePage.getByRole("button", { name: "space_tv", exact: true }).click();
+    await examplePage.getByRole("button", { name: "Export Code", exact: true }).click();
+    const exported = (await examplePage.locator("#editor-wrap .cm-line").allTextContents()).join("\n");
+    assert.match(exported, /\$: s\("#222"\)[\s\S]*Hscan:[\s\S]*\.rows\(3\)\s+\.cols\(4\)\s+\.gridMod\(\)/);
+    await examplePage.keyboard.press("Control+Enter");
+    await examplePage.setViewportSize({ width: 360, height: 240 });
+    const frame = { cycle: 0.25, cps: 0.5, settleMs: 450 };
+    const rendered = await renderAndSettle(examplePage, frame);
+    assert(rendered.settled);
+    assert(rendered.pixels.data.some((value, i) => i % 4 === 0 && value > 90), "The exported grid must be visible above #222");
+    await examplePage.evaluate(code => window.pdSetCode(code, true), spaceTv.code);
+    const reference = await renderAndSettle(examplePage, frame);
+    assert(reference.settled);
+    assert.equal(diffPixels(rendered.pixels, reference.pixels, 0).drifted, 0);
+  } finally {
+    await examplePage.close();
+  }
+
   assert.deepEqual(errors, []);
-  console.log("NodesDevil browser check passed: box selection, two-column node menu and search, numeric input and cable gestures, font controls, media drag, previews, projection, persistence, examples, palette, Color Ramp, Color pickers, and mode dropdowns.");
+  console.log("NodesDevil browser check passed: node and cable gestures, live previews, projection, persistence, node controls, and on-demand code export.");
 } finally {
   await close();
 }

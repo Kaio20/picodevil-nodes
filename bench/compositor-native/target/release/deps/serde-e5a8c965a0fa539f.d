@@ -1,0 +1,14 @@
+E:\Dev\picodevil nodes\picodevil-nodes\bench\compositor-native\target\release\deps\serde-e5a8c965a0fa539f.d: C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs E:\Dev\picodevil\ nodes\picodevil-nodes\bench\compositor-native\target\release\build\serde-608510ff7811acb6\out/private.rs
+
+E:\Dev\picodevil nodes\picodevil-nodes\bench\compositor-native\target\release\deps\libserde-e5a8c965a0fa539f.rlib: C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs E:\Dev\picodevil\ nodes\picodevil-nodes\bench\compositor-native\target\release\build\serde-608510ff7811acb6\out/private.rs
+
+E:\Dev\picodevil nodes\picodevil-nodes\bench\compositor-native\target\release\deps\libserde-e5a8c965a0fa539f.rmeta: C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs E:\Dev\picodevil\ nodes\picodevil-nodes\bench\compositor-native\target\release\build\serde-608510ff7811acb6\out/private.rs
+
+C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs:
+C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs:
+C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs:
+C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs:
+C:\Users\Glaze\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs:
+E:\Dev\picodevil\ nodes\picodevil-nodes\bench\compositor-native\target\release\build\serde-608510ff7811acb6\out/private.rs:
+
+# env-dep:OUT_DIR=E:\\Dev\\picodevil nodes\\picodevil-nodes\\bench\\compositor-native\\target\\release\\build\\serde-608510ff7811acb6\\out

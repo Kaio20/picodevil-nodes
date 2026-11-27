@@ -4,10 +4,10 @@ import "./shuffle-stack";
 import { CYCLES_PER_SECOND, setRuntimeCps, MAX_FREE_VIDEO_ELEMENTS } from "./config";
 import { CpsController } from "./cps-controller";
 import { createMetrics, recordFrameMetrics } from "./frame-metrics";
-import { resolveMedia, addMedia, clearAll as clearMediaRegistry, setDurationByUrl, loadVideo, loadImage, getAllEntries, initRegistry, addOnChange } from "./media-registry";
+import { resolveMedia, resolveMediaId, addMedia, clearAll as clearMediaRegistry, setDurationByUrl, loadVideo, loadImage, getAllEntries, importAll, initRegistry, addOnChange } from "./media-registry";
 import { probeHealth, shouldAutoProbeOnStartup } from "./server-config";
 import { initRegistry as initPatternRegistry, restoreRegistry, each, all } from "./pattern-registry";
-import { loadFromUrl, saveToUrl, cancelUrlSave, setUrlWarnCallback, hashLooksCorrupt, persistableMedia } from "./url-state";
+import { loadFromUrl, saveToUrl, cancelUrlSave, setUrlWarnCallback, hashLooksCorrupt, persistableMedia, type UrlMediaEntry } from "./url-state";
 import { defaultCode } from "./editor";
 import { pickAutostartCode } from "./examples";
 import { createVideoPoolManager } from "./video-pool-manager";
@@ -24,9 +24,11 @@ import { showFatalOverlay, rendererFailureMessage } from "./fatal-overlay";
 import { FrameRenderer } from "./renderer";
 import type { Renderer } from "./renderer-interface";
 import { EvalController } from "./eval-controller";
-import { starterGraph } from "./node-graph";
+import { starterGraph, type Graph } from "./node-graph";
 import { NodeEditor } from "./node-editor";
-import { compileLiveGraph, mediaUrl, NodePreviews } from "./node-runtime";
+import { compileLiveGraph, mediaUrl, NodePreviews, readLiveGraph, registerLiveGraph } from "./node-runtime";
+import { NodeMotions, NodeTransport } from "./node-transport";
+import { exportNodeCode } from "./node-code";
 import { NodeProjection } from "./node-projection";
 import { loadNodes, saveNodes, type NodeSession } from "./node-session";
 import { createExampleGraph } from "./node-examples";
@@ -124,6 +126,8 @@ const pool = createVideoPoolManager({
 
 const frameRenderer = new FrameRenderer(activeRenderer, pool, pdMetrics);
 const cpsController = new CpsController(CYCLES_PER_SECOND, performance.now());
+const nodeTransport = new NodeTransport();
+let liveMotions = new NodeMotions();
 
 /**
  * Sets the global cycles per second (tempo). Default is 0.5 (one cycle = 2 seconds).
@@ -146,6 +150,11 @@ function setCpm(cpm: number | Pattern) {
 (window as any).pdAddMedia = addMedia;
 (window as any).pdClearMedia = clearMediaRegistry;
 
+function importNodeMedia(media: UrlMediaEntry[]) {
+  const missing = media.filter(entry => !resolveMediaId(entry.id));
+  if (missing.length) importAll(JSON.stringify(missing));
+}
+
 const evalController = new EvalController({
   clearActiveVideos: () => pool.clearVideos(frameRenderer.activeVideoEls.splice(0)),
   snapshotCps: () => cpsController.snapshot(),
@@ -157,6 +166,14 @@ const evalController = new EvalController({
     fontPicker: fontPickerWidget,
     each, all,
     fft,
+    nodeGraph: (graph: Graph, media: UrlMediaEntry[] = []) => {
+      importNodeMedia(media);
+      setCpm(registerLiveGraph(graph));
+    },
+    nodeGraphValues: (graph: Graph, media: UrlMediaEntry[] = []) => {
+      importNodeMedia(media);
+      return readLiveGraph(graph);
+    },
   },
 });
 
@@ -212,6 +229,8 @@ function frame() {
 
   const { cps, cycle, t } = cpsController.tick(rafAbsNow);
   setRuntimeCps(cps);
+  nodeTransport.advance(cycle, cps, rafAbsNow);
+  if (mode === "nodes") liveMotions.advance(cycle);
   fftUpdateFrame();
 
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, rafAbsNow);
@@ -232,7 +251,9 @@ function frame() {
   );
 
   flushWarnings();
-  previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, canvas.width / canvas.height, nodeEditor.previewNode);
+  if (!nodeEditor.isMovingGraph) {
+    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, canvas.width / canvas.height, nodeEditor.previewNode);
+  }
 }
 document.addEventListener("visibilitychange", scheduleFrame);
 
@@ -250,6 +271,7 @@ document.addEventListener("visibilitychange", scheduleFrame);
   const t = Math.floor(cycle) + (cycle % 1);
   setRuntimeCps(cps);
   const wall = wallMs ?? performance.now();
+  nodeTransport.advance(cycle, cps, wall);
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, wall);
   projection.present(canvas);
 };
@@ -334,11 +356,33 @@ const nodeEditor = new NodeEditor(nodeHost, {
   graph: session.draft,
   view: session.view,
   save: graph => { session.draft = graph; saveWorkspace(); },
+  setTempo: tempo => {
+    if (session.live?.nodes.some(node => node.kind === "tempo")) return;
+    const now = performance.now();
+    const frame = cpsController.tick(now);
+    nodeTransport.advance(frame.cycle, tempo / 60, now);
+    cpsController.setCpm(tempo, now);
+    if (session.live) session.live = { ...session.live, tempo };
+  },
+  setMotionFactor: (id, input, value) => {
+    if (!session.live) return false;
+    const cycle = cpsController.tick(performance.now()).cycle;
+    if (!liveMotions.setFactor(id, input, cycle, value)) return false;
+    const live = session.live;
+    session.live = { ...live, nodes: live.nodes.map(node => node.id === id ? { ...node, data: { ...node.data, [input]: value } } : node) };
+    return true;
+  },
   run: (graph, restart) => {
     try {
-      const next = compileLiveGraph(graph);
       const now = performance.now();
-      if (restart) cpsController.reset(now);
+      const phase = cpsController.tick(now);
+      const motions = new NodeMotions(restart ? undefined : liveMotions, restart ? 0 : phase.cycle);
+      const next = compileLiveGraph(graph, nodeTransport, motions);
+      if (restart) {
+        cpsController.reset(now);
+        nodeTransport.reset(now);
+      } else nodeTransport.advance(phase.cycle, phase.cps, now);
+      liveMotions = motions;
       restoreRegistry(next.registry);
       cpsController.setCpm(next.tempo, now);
       evalController.screens = next.screens;
@@ -351,6 +395,12 @@ const nodeEditor = new NodeEditor(nodeHost, {
     }
   },
   showCode: () => showWorkspace("code"),
+  exportCode: graph => {
+    const code = exportNodeCode(graph, getAllEntries());
+    showWorkspace("code");
+    if (code === currentCode) saveWorkspace();
+    else setCode(code);
+  },
   openReference: entry => sidebarControls.openReference(entry),
   openOutput: () => projection.open(),
   bindProjectionToggle: button => projection.bindToggle(button),

@@ -30,6 +30,7 @@ export interface ExpectedTimeParams {
   eventBegin: number;
   cps: number;
   speed: number;
+  elapsedSec?: number;
   loopStart: number;
   loopEnd: number;
   duration: number;
@@ -55,7 +56,7 @@ export function computeExpectedTime(p: ExpectedTimeParams): number {
     const distInLoop = ((dist % loopLen) + loopLen) % loopLen;
     return p.loopStart + distInLoop;
   }
-  const elapsedSec = (p.currentCycle - p.eventBegin) / p.cps;
+  const elapsedSec = p.elapsedSec ?? (p.currentCycle - p.eventBegin) / p.cps;
   // Inverted range (begin > end) means wrap through the video boundary:
   // e.g. begin=0.8, end=0.2 on a 10s video → play [8,10) then [0,2), loopLen=4
   const inverted = p.loopStart > p.loopEnd;
@@ -184,7 +185,8 @@ export function renderVideoFrame(c: VideoFrameContext): void {
   const synced = c.ev.sync != null;
   const rolling = c.ev.rolling != null;
   const syncOffset = synced && c.ev.sync !== true ? Number(c.ev.sync) * c.el.duration : 0;
-  updateVideoPlayback(c.el, speed, beginVal, endVal, c.currentCycle, c.eventBegin, c.cps, syncOffset, synced, rolling, c.onSeek, c.onDriftSeek, c.frameWallTime);
+  updateVideoPlayback(c.el, speed, beginVal, endVal, c.currentCycle, c.eventBegin, c.cps, syncOffset, synced, rolling, c.onSeek, c.onDriftSeek, c.frameWallTime,
+    synced || rolling ? undefined : c.ev._playlistElapsed);
 }
 
 function updateVideoPlayback(
@@ -201,6 +203,7 @@ function updateVideoPlayback(
   onSeek?: () => void,
   onDriftSeek?: () => void,
   frameWallTime?: number,
+  playlistElapsed?: number,
 ): void {
   const dur = el.duration;
   // Skip until the video has loaded enough to report a usable duration.
@@ -311,7 +314,7 @@ function updateVideoPlayback(
   const distOffset = (synced || rolling) ? st.syncDistOffset : 0;
   const expected = computeExpectedTime({
     currentCycle, eventBegin, cps: cps || CYCLES_PER_SECOND,
-    speed, loopStart, loopEnd, duration: dur, syncOffset, distOffset,
+    speed, loopStart, loopEnd, duration: dur, syncOffset, distOffset, elapsedSec: playlistElapsed,
   });
 
   const now = frameWallTime ?? performance.now();

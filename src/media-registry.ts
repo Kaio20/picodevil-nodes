@@ -1,5 +1,6 @@
 import { getServerUrl, resolveUrl, migrateLegacyServerUrl } from "./server-config";
 import { MAX_UPLOAD_BYTES } from "./config";
+import type { NodeDrop } from "./node-graph";
 
 const THUMB_STORAGE_PREFIX = "picodevil:thumb:";
 
@@ -221,6 +222,8 @@ export function updateUrl(name: string, url: string) {
   const entry = registry.find(e => e.name === name);
   if (!entry) return;
   entry.url = url;
+  entry.duration = undefined;
+  entry.unavailable = undefined;
   entry.type = guessType(url);
   entry.thumbnail = undefined;
   save();
@@ -259,6 +262,11 @@ export function getAllEntries(collection?: MediaCollection): MediaEntry[] {
 
 export function isTexture(entry: MediaEntry) {
   return entry.collection === "textures" && entry.type === "image";
+}
+
+export function mediaNodeDrop(entry: MediaEntry): NodeDrop {
+  if (entry.type === "video" && !isTexture(entry)) return { kind: "video", data: { "clip-1": entry.id } };
+  return { kind: isTexture(entry) ? "texture" : "media", data: { media: entry.id } };
 }
 
 export function exportAll(collection?: MediaCollection): string {

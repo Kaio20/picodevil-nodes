@@ -17,17 +17,19 @@ import { WebGLRenderer } from "./webgl-renderer";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { hashStr, withLayoutCounter } from "./layout-counter";
 import { collectScreens, getNamedScreenIndices, nextAutoRenderName, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
-import { acceptsPixelField, expressionOperations, fftBands, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, modeFor, outputType, previewType, rampInterpolation, rampStops, signalGraph, variableFor, type Band, type Graph, type GraphNode, type Literal } from "./node-graph";
+import { acceptsPixelField, expressionInputType, expressionOperations, fftBands, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, listInputCount, listInputId, modeFor, outputType, previewType, rampInterpolation, rampStops, signalGraph, testCardStrips, variableFor, VIDEO_TEST_CARD, type Band, type Graph, type GraphEdge, type GraphNode, type Literal } from "./node-graph";
 import { gradientSampler, type Gradient } from "./gradient";
 import { colorRamp } from "./effects-controls";
 import { clampUnit, colorCss, colorFromCss, colorHex, isColorValue, rgbFromHex, rgbHex, whiteColor, type ColorValue } from "./color-value";
 import type { PixelExpression, PixelOperator, PixelRaster } from "./pixel-field";
-import "./index-patterns";
+import { index } from "./index-patterns";
 import "./shuffle-stack";
+import { NodeMotions, NodeTransport, wrapCycle } from "./node-transport";
+import { nodeVideoPattern } from "./node-video";
 
 export function mediaUrl(name: string, base: string): string {
   const entry = resolveMedia(name);
-  return entry ? resolveUrl(entry.url) : base + name;
+  return entry ? resolveUrl(entry.url) : /^(https?:|blob:|data:)/i.test(name) ? name : base + name;
 }
 
 function call(pattern: Pattern, method: string, ...args: unknown[]): Pattern {
@@ -35,11 +37,8 @@ function call(pattern: Pattern, method: string, ...args: unknown[]): Pattern {
 }
 
 function makeTestCard(): Pattern {
-  const bars = ["#eeeeee", "#e4de37", "#59e4dd", "#4dd45b", "#df59e5", "#e14849", "#445ae2"];
-  const tones = ["#121212", "#373737", "#797979", "#a5a5a5", "#eaeaea"];
-  const strip = (colors: string[], y: number, height: number) => colors.map((value, i) =>
-    call(call(call(call(color(value), "x", (i + 0.5) / colors.length), "y", y), "width", 1 / colors.length), "height", height));
-  return stack(...strip(bars, 0.36, 0.72), ...strip(tones, 0.86, 0.28));
+  return stack(...testCardStrips.flatMap(({ colors, y, height }) => colors.map((value, i) =>
+    call(call(call(call(color(value), "x", (i + 0.5) / colors.length), "y", y), "width", 1 / colors.length), "height", height))));
 }
 
 class PixelField {
@@ -154,7 +153,22 @@ function numberChoices(value: unknown): number[] {
   return choices.every(Number.isFinite) ? choices : [];
 }
 
-function buildValues(graph: Graph, preview: boolean) {
+function addColors(a: unknown, b: unknown): ColorValue {
+  const rgb = (value: unknown) => isColorValue(value) ? rgbFromHex(value.hex) : [Number(value), Number(value), Number(value)];
+  const left = rgb(a);
+  const right = rgb(b);
+  const alpha = (isColorValue(a) ? a.alpha : 0) + (isColorValue(b) ? b.alpha : 0);
+  return { hex: rgbHex([clampUnit(left[0] + right[0]), clampUnit(left[1] + right[1]), clampUnit(left[2] + right[2])]), alpha: clampUnit(alpha) };
+}
+
+interface RuntimeContext {
+  transport: NodeTransport;
+  motions: NodeMotions;
+  incoming: Map<string, GraphEdge>;
+  nodes: Map<string, GraphNode>;
+}
+
+function buildValues(graph: Graph, preview: boolean, transport = new NodeTransport(), motions = new NodeMotions()) {
   const values = new Map<string, Value>();
   const visiting = new Set<string>();
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
@@ -195,7 +209,7 @@ function buildValues(graph: Graph, preview: boolean) {
         if (socket.optional) return [];
         throw new Error(`${socket.label} needs a connection.`);
       }));
-      const value = withLayoutCounter(hashStr(node.id), () => buildNode(node, inputs, graph, preview, setters, read, output));
+      const value = withLayoutCounter(hashStr(node.id), () => buildNode(node, inputs, graph, preview, setters, read, { transport, motions, incoming, nodes }, output));
       values.set(key, value);
       return value;
     } finally { visiting.delete(id); }
@@ -205,7 +219,7 @@ function buildValues(graph: Graph, preview: boolean) {
 
 function buildNode(
   node: GraphNode, input: Record<string, Value>, graph: Graph, preview: boolean,
-  setters: Map<Literal, GraphNode>, read: (id: string) => Value, output?: string,
+  setters: Map<Literal, GraphNode>, read: (id: string) => Value, context: RuntimeContext, output?: string,
 ): Value {
   const image = input.image as Pattern;
   if (isFontVariation(node.kind)) {
@@ -219,11 +233,16 @@ function buildNode(
     return styled;
   }
   const mode = modeFor(node)?.id;
+  const wrapTime = (value: Value) => context.motions.isTime(value) ? value.withValue(wrapCycle) : value;
   switch (node.kind) {
+    case "time": return context.motions.time;
+    case "video": return nodeVideoPattern(node.id, Array.from({ length: listInputCount(node) }, (_, i) =>
+      input[listInputId("video", i)] as string | Pattern ?? ""), mode ?? "clipEnd", context.transport);
     case "media":
     case "texture": {
       const mediaId = String(node.data.media ?? "");
       const texture = node.kind === "texture";
+      if (texture && (!mediaId || mediaId === VIDEO_TEST_CARD)) return makeTestCard();
       const catalog = texture && preview && catalogTexture(mediaId);
       if (catalog) return pure({ _type: "image", src: catalog.url, begin: 0, end: 1 });
       const resolveSource = () => {
@@ -243,7 +262,42 @@ function buildNode(
     case "expression": {
       const { id, evaluate } = expressionOperations.find(operation => operation.id === mode) ?? expressionOperations[0];
       const { a, b } = input;
+      if (id === "add") {
+        const leftType = expressionInputType(graph, node, "a");
+        const rightType = expressionInputType(graph, node, "b");
+        const leftImage = isRenderable(leftType);
+        const rightImage = isRenderable(rightType);
+        if (leftImage || rightImage) {
+          if (a instanceof PixelField || b instanceof PixelField) throw new Error("Image addition needs an image, color, or uniform number.");
+          if (leftImage && (rightImage || rightType === "color")) return renderLayer(node.id, stack(a, call(rightImage ? b as Pattern : solidImage(b), "blend", "add")));
+          if (rightImage && leftType === "color") return renderLayer(node.id, stack(solidImage(a), call(b as Pattern, "blend", "add")));
+          const composite = renderLayer(node.id, (leftImage ? a : b) as Pattern);
+          return call(composite, "brightness", leftImage ? b : a);
+        }
+        if (leftType === "color" || rightType === "color") {
+          if (a instanceof PixelField || b instanceof PixelField) throw new Error("Color addition needs a color or uniform number.");
+          if (!(a instanceof Pattern) && !(b instanceof Pattern)) return addColors(a, b);
+          if (!(a instanceof Pattern)) return b.withValue((right: unknown) => addColors(a, right));
+          if (!(b instanceof Pattern)) return a.withValue((left: unknown) => addColors(left, b));
+          return a.withValue((left: unknown) => (right: unknown) => addColors(left, right)).appBoth(b);
+        }
+        const type = outputType(graph, node);
+        if (type === "visual") return silence;
+        if (type === "color") return transparent;
+      }
       if (a instanceof PixelField || b instanceof PixelField) return fieldMath(id, a, b);
+      if (id === "multiply" && context.motions.isTime(a) !== context.motions.isTime(b)) {
+        const timeInput = context.motions.isTime(a) ? "a" : "b";
+        const factorInput = timeInput === "a" ? "b" : "a";
+        const timeEdge = context.incoming.get(`${node.id}:${timeInput}`);
+        const factorEdge = context.incoming.get(`${node.id}:${factorInput}`);
+        const constant = factorEdge && context.nodes.get(factorEdge.from);
+        const editable = !factorEdge ? `${node.id}:${factorInput}` : constant?.kind === "constant" &&
+          !context.incoming.has(`${constant.id}:value`) ? `${constant.id}:value` : undefined;
+        const factor = input[factorInput];
+        return context.motions.multiply(`${node.id}:${timeInput}:${timeEdge?.from ?? ""}`, input[timeInput] as Pattern,
+          factor instanceof Pattern ? factor : Number(factor), editable);
+      }
       if (!(b instanceof Pattern)) return mapScalar(a, left => evaluate(Number(left), Number(b)));
       if (!(a instanceof Pattern)) return mapScalar(b, right => evaluate(Number(a), Number(right)));
       return a.withValue((left: unknown) => (right: unknown) => evaluate(Number(left), Number(right))).appBoth(b);
@@ -351,7 +405,11 @@ function buildNode(
       return cropped;
     }
     case "stack": return mode === "repeat" ? stackN(bounded(input.value, 128), image) : stack(image, input.second);
-    case "index": return mode === "shuffle" ? call(image, "shuffleIndex", input.seed) : call(image, "index");
+    case "index": {
+      const images = Array.from({ length: listInputCount(node) }, (_, i) => input[listInputId("index", i)] as Pattern).filter(Boolean);
+      if (!images.length) throw new Error("Connect an image to Index.");
+      return mode === "shuffle" ? call(images.length === 1 ? images[0] : stack(...images), "shuffleIndex", input.seed) : index(...images);
+    }
     case "grid": {
       const rows = input.rows === undefined ? undefined : bounded(input.rows, 64);
       const columns = input.columns === undefined ? undefined : bounded(input.columns, 64);
@@ -359,12 +417,12 @@ function buildNode(
     }
     case "position": return call(call(image, "x", input.x), "y", input.y);
     case "size": return call(call(image, "width", input.x), "height", input.y);
-    case "scroll": return call(image, "scroll", input.x, input.y);
+    case "scroll": return call(image, "scroll", wrapTime(input.x), wrapTime(input.y));
     case "scale": return call(call(image, "scaleX", input.x ?? input.value), "scaleY", input.y ?? input.value);
     case "rotate": {
-      let rotated = call(image, "rotateZ", input.value);
-      if (input.x !== undefined) rotated = call(rotated, "rotateX", input.x);
-      if (input.y !== undefined) rotated = call(rotated, "rotateY", input.y);
+      let rotated = call(image, "rotateZ", wrapTime(input.value));
+      if (input.x !== undefined) rotated = call(rotated, "rotateX", wrapTime(input.x));
+      if (input.y !== undefined) rotated = call(rotated, "rotateY", wrapTime(input.y));
       return rotated;
     }
     case "fit": return call(image, "objectfit", input.mode);
@@ -422,48 +480,58 @@ function buildNode(
 
 function previewKey(target: PreviewTarget) { return JSON.stringify([target.id, Boolean(target.showRamp)]); }
 
-function compile(draft: Graph, targets?: readonly PreviewTarget[]) {
+function registerGraph(draft: Graph, targets?: readonly PreviewTarget[], transport = new NodeTransport(), motions = new NodeMotions()) {
   const graph = signalGraph(draft);
+  const previews = new Map<string, PreviewValue>();
+  const read = buildValues(graph, targets !== undefined, transport, motions);
+  let tempo: Value = graph.tempo ?? CYCLES_PER_SECOND * 60;
+  const tempoNode = graph.nodes.filter(node => node.kind === "tempo").at(-1);
+  if (tempoNode) {
+    try { tempo = read(tempoNode.id); }
+    catch (error) { if (!targets) throw error; }
+  }
+  if (targets) {
+    for (const target of targets) {
+      const { id } = target;
+      const key = previewKey(target);
+      const node = graph.nodes.find(item => item.id === id);
+      if (!node) continue;
+      try {
+        const value = read(id, target.showRamp ? rampPreview : undefined);
+        if (value instanceof PixelField || (!target.showRamp && isRenderable(previewType(graph, node)))) {
+          const layer = `__auto_preview_${id}`;
+          registerAutoHidden(layer, value instanceof PixelField ? fieldRaster(value) : value as Pattern);
+          previews.set(key, { layer });
+        } else previews.set(key, { value });
+      } catch (error) {
+        previews.set(key, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  } else {
+    const outputs = graph.nodes.filter(node => node.kind === "output");
+    if (!outputs.length) throw new Error("Add an Output node to run this graph.");
+    for (const node of outputs) call(read(node.id) as Pattern, "p", "$");
+  }
+  motions.finish();
+  return { tempo: tempo as number | Pattern, previews };
+}
+
+function compile(draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport, motions = new NodeMotions()) {
   const previous = snapshotRegistry();
   resetRegistry();
   try {
-    const previews = new Map<string, PreviewValue>();
-    const read = buildValues(graph, targets !== undefined);
-    const outputs = graph.nodes.filter(node => node.kind === "output");
-    let tempo: Value = CYCLES_PER_SECOND * 60;
-    const tempoNode = graph.nodes.filter(node => node.kind === "tempo").at(-1);
-    if (tempoNode) {
-      try { tempo = read(tempoNode.id); }
-      catch (error) { if (!targets) throw error; }
-    }
-    if (targets) {
-      for (const target of targets) {
-        const { id } = target;
-        const key = previewKey(target);
-        const node = graph.nodes.find(item => item.id === id);
-        if (!node) continue;
-        try {
-          const value = read(id, target.showRamp ? rampPreview : undefined);
-          if (value instanceof PixelField || (!target.showRamp && isRenderable(previewType(graph, node)))) {
-            const layer = `__auto_preview_${id}`;
-            registerAutoHidden(layer, value instanceof PixelField ? fieldRaster(value) : value as Pattern);
-            previews.set(key, { layer });
-          } else previews.set(key, { value });
-        } catch (error) {
-          previews.set(key, { error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-    } else {
-      if (!outputs.length) throw new Error("Add an Output node to run this graph.");
-      for (const node of outputs) call(read(node.id) as Pattern, "p", "$");
-    }
+    const { tempo, previews } = registerGraph(draft, targets, transport, motions);
     const screens = collectScreens();
     const namedScreens = getNamedScreenIndices();
-    return { screens, namedScreens, registry: snapshotRegistry(), tempo: tempo as number | Pattern, previews };
+    return { screens, namedScreens, registry: snapshotRegistry(), tempo, previews, motions };
   } finally { restoreRegistry(previous); }
 }
 
-export function compileLiveGraph(graph: Graph) { return compile(graph); }
+export function compileLiveGraph(graph: Graph, transport?: NodeTransport, motions?: NodeMotions) { return compile(graph, undefined, transport, motions); }
+
+export function registerLiveGraph(graph: Graph) { return registerGraph(graph).tempo; }
+
+export function readLiveGraph(graph: Graph) { return buildValues(signalGraph(graph), false); }
 
 export interface PreviewTarget {
   id: string;
@@ -482,6 +550,7 @@ export class NodePreviews {
   private frameRenderer?: FrameRenderer;
   private pool?: ReturnType<typeof createVideoPoolManager>;
   private clock?: CpsController;
+  private transport = new NodeTransport();
   private graph?: Graph;
   private result?: ReturnType<typeof compile>;
   private signature = "";
@@ -516,10 +585,12 @@ export class NodePreviews {
     if (!this.clock) {
       this.clock = new CpsController(CYCLES_PER_SECOND, now);
       this.clock.restore({ ...this.clock.snapshot(), startMs: now - cycle / CYCLES_PER_SECOND * 1000, accumulatedCycle: cycle });
+      this.transport.reset(now);
       this.result = undefined;
     }
     if (!this.result || this.graph !== graph || this.signature !== signature) {
-      const result = compile(graph, batch);
+      const phase = this.clock.tick(now).cycle;
+      const result = compile(graph, batch, this.transport, new NodeMotions(this.result?.motions, phase));
       if (this.graph !== graph || !this.result) this.clock.setCpm(result.tempo, now);
       this.graph = graph;
       this.signature = signature;
@@ -527,6 +598,8 @@ export class NodePreviews {
     }
     const result = this.result;
     const time = this.clock.tick(now);
+    this.transport.advance(time.cycle, time.cps, now);
+    result.motions.advance(time.cycle);
     const registry = snapshotRegistry();
     const cps = getRuntimeCps();
     restoreRegistry(result.registry);

@@ -1,7 +1,7 @@
 import {
   getAllEntries, addMedia, removeMedia, renameMedia, updateUrl, updateEntry,
   isYouTubeUrl, downloadYouTube, exportAll, importAll, clearAll, setOnChange,
-  uploadToServer, addFromServer, missingFromServer, guessTypeFromFile, isTexture, moveMediaBefore,
+  uploadToServer, addFromServer, missingFromServer, guessTypeFromFile, isTexture, mediaNodeDrop, moveMediaBefore,
   type MediaCollection, type MediaEntry, type SourceItem,
 } from "./media-registry";
 import { getServerUrl, getServerStatus, subscribe as subscribeServer } from "./server-config";
@@ -836,7 +836,7 @@ function attachReorder(handle: HTMLElement, item: HTMLElement, entry: MediaEntry
     const pane = item.parentElement;
     if (!pane) return;
     drag = {
-      drop: { kind: isTexture(entry) ? "texture" : "media", data: { media: entry.id } },
+      drop: mediaNodeDrop(entry),
       name: entry.name, el: item, handle, pane, axis,
       pointerId: e.pointerId, startX: e.clientX, startY: e.clientY,
       isTouch: e.pointerType === "touch", active: false,

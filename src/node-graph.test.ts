@@ -9,8 +9,161 @@ import { FrameRenderer } from "./renderer";
 import { createMetrics } from "./frame-metrics";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { readPixel, withRenderer } from "./webgl-test-helpers";
+import { NodeMotions, NodeTransport } from "./node-transport";
+import { nodeVideoPattern } from "./node-video";
+import { initRegistry as initMediaRegistry } from "./media-registry";
 
 describe("NodesDevil graph", () => {
+  it("keeps two Time branches independent through live factor edits and wraps a full turn", () => {
+    initRegistry();
+    const time = makeNode("time", 0, 0);
+    const multiply = makeNode("expression", 0, 0, { mode: "multiply", b: 2 });
+    const texture = makeNode("color", 0, 0);
+    const direct = makeNode("rotate", 0, 0);
+    const branch = makeNode("rotate", 0, 0);
+    const outputA = makeNode("output", 0, 0);
+    const outputB = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [time, multiply, texture, direct, branch, outputA, outputB], variables: [], tempo: 30,
+      edges: [
+        { from: time.id, to: multiply.id, input: "a" },
+        { from: time.id, to: direct.id, input: "value" },
+        { from: multiply.id, to: branch.id, input: "value" },
+        { from: texture.id, to: direct.id, input: "image" },
+        { from: texture.id, to: branch.id, input: "image" },
+        { from: direct.id, to: outputA.id, input: "image" },
+        { from: branch.id, to: outputB.id, input: "image" },
+      ],
+    };
+    const { screens, motions, tempo } = compileLiveGraph(graph, new NodeTransport(), new NodeMotions());
+    const angle = (index: number, cycle: number) => screens[index].queryArc(cycle, cycle)[0].value.rotateZ;
+    expect(tempo).toBe(30);
+    expect(angle(0, 0.25)).toBeCloseTo(0.25);
+    expect(angle(1, 0.25)).toBeCloseTo(0.5);
+    expect(motions.setFactor(multiply.id, "b", 0.25, 4)).toBe(true);
+    expect(angle(1, 0.25)).toBeCloseTo(0.5);
+    expect(angle(1, 0.3)).toBeCloseTo(0.7);
+    expect(angle(0, 0.3)).toBeCloseTo(0.3);
+    expect(angle(0, 361 / 360)).toBeCloseTo(1 / 360);
+  });
+
+  it("uses full video durations across a tempo change and supports both cycle modes", () => {
+    const first = { id: "test-long", name: "long", url: "/long.mp4", type: "video" as const, duration: 3, thumbnail: "/empty.png" };
+    const second = { id: "test-short", name: "short", url: "/short.mp4", type: "video" as const, duration: 1, thumbnail: "/empty.png" };
+    const unavailable = { ...second, id: "unavailable", name: "unavailable", unavailable: true };
+    initMediaRegistry([first, unavailable, second]);
+    try {
+      const transport = new NodeTransport();
+      transport.reset(0);
+      const full = nodeVideoPattern("video", [first.id, unavailable.id, second.id], "clipEnd", transport);
+      const at = (cycle: number) => full.queryArc(cycle, cycle)[0].value;
+      expect(at(0)).toMatchObject({ src: "long", _playlistElapsed: 0 });
+      transport.advance(0.5, 1, 1000);
+      expect(at(0.5)).toMatchObject({ src: "long", _playlistElapsed: 1 });
+      transport.advance(2.5, 1, 3000);
+      expect(at(2.5)).toMatchObject({ src: "short", _playlistElapsed: 0 });
+      transport.advance(3.5, 1, 4000);
+      expect(at(3.5)).toMatchObject({ src: "long", _playlistElapsed: 0 });
+      const within = nodeVideoPattern("within", [first.id, second.id], "listPerCycle", transport);
+      const between = nodeVideoPattern("between", [first.id, second.id], "clipPerCycle", transport);
+      expect(within.queryArc(0.75, 0.75)[0].value.src).toBe("short");
+      expect(between.queryArc(0.75, 0.75)[0].value.src).toBe("long");
+      expect(between.queryArc(1.25, 1.25)[0].value.src).toBe("short");
+    } finally { initMediaRegistry([]); }
+  });
+
+  it("restores matching live and draft patches even after moving a node", () => {
+    const time = makeNode("time", 0, 0);
+    const graph: Graph = { nodes: [time, makeNode("output", 220, 0)], edges: [], variables: [], tempo: 45 };
+    const draft = { ...graph, nodes: [{ ...time, x: 80 }, graph.nodes[1]] };
+    const key = "nodesdevil-session-v1";
+    const previous = localStorage.getItem(key);
+    try {
+      const session = { draft, live: graph, view: { x: 0, y: 0, zoom: 1, previews: [] }, media: [] };
+      saveNodes(session);
+      const restored = loadNodes()!;
+      expect(restored.live).toBe(restored.draft);
+      saveNodes({ ...session, draft: { ...draft, tempo: 60 } });
+      expect(loadNodes()?.live?.tempo).toBe(45);
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+  });
+
+  it("passes image inputs in row order to Index", () => {
+    initRegistry();
+    const colors = ["#ff0000", "#00ff00", "#0000ff"].map(hex => makeNode("color", 0, 0, { color: { hex, alpha: 1 } }));
+    const index = makeNode("index", 0, 0, { inputCount: 3 });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = { nodes: [...colors, index, output], variables: [], edges: [
+      { from: colors[2].id, to: index.id, input: "image-3" },
+      { from: colors[0].id, to: index.id, input: "image" },
+      { from: colors[1].id, to: index.id, input: "image-2" },
+      { from: index.id, to: output.id, input: "image" },
+    ] };
+    const values = compileLiveGraph(keepCompatibleEdges(graph)).screens[0].queryArc(0.5, 0.5).map(({ value }: any) => [value.i, value.color]);
+    expect(values).toEqual([[0, "#ff0000"], [1, "#00ff00"], [2, "#0000ff"]]);
+  });
+
+  it("adds a number to the rendered image while keeping transparency", () => {
+    initRegistry();
+    const color = makeNode("color", 0, 0, { color: { hex: "#4c4c4c", alpha: 0.5 } });
+    const size = makeNode("size", 0, 0, { x: 0.5 });
+    const add = makeNode("expression", 0, 0, { mode: "add", b: 0.2 });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = { nodes: [color, size, add, output], edges: [], variables: [] };
+    expect(outputType(graph, add)).toBeUndefined();
+    const first = withEdge(graph, { from: add.id, to: output.id, input: "image" })!;
+    const second = withEdge(first, { from: color.id, to: size.id, input: "image" })!;
+    const result = withEdge(second, { from: size.id, to: add.id, input: "a" })!;
+    expect(keepCompatibleEdges(result).edges).toEqual(result.edges);
+    withRenderer((renderer, canvas) => {
+      const frames = new FrameRenderer(renderer, createVideoPoolManager({ resolveMediaUrl: name => name }), createMetrics());
+      const { screens, namedScreens } = compileLiveGraph(result);
+      frames.render(screens, namedScreens, 0.25, 1, 0.25);
+      const [r, g, b, a] = readPixel(canvas, 50, 50);
+      expect(Math.abs(r - 64)).toBeLessThanOrEqual(2);
+      expect([g, b]).toEqual([r, r]);
+      expect(Math.abs(a - 128)).toBeLessThanOrEqual(2);
+      expect(readPixel(canvas, 10, 50)[3]).toBe(0);
+    });
+  });
+
+  it("adds colors with clamping and composites images before downstream effects", () => {
+    initRegistry();
+    const first = makeNode("color", 0, 0, { color: { hex: "#cc4020", alpha: 0.4 } });
+    const second = makeNode("color", 0, 0, { color: { hex: "#991080", alpha: 0.7 } });
+    const add = makeNode("expression", 0, 0);
+    const output = makeNode("output", 0, 0);
+    const result: Graph = { nodes: [first, second, add, output], variables: [], edges: [
+      { from: first.id, to: add.id, input: "a" },
+      { from: second.id, to: add.id, input: "b" },
+      { from: add.id, to: output.id, input: "image" },
+    ] };
+    expect(outputType(result, add)).toBe("color");
+    expect(compileLiveGraph(result).screens[0].queryArc(0.25, 0.25)[0].value)
+      .toMatchObject({ color: "#ff50a0", colorAlpha: 1 });
+
+    const red = makeNode("color", 0, 0, { color: { hex: "#990000", alpha: 1 } });
+    const blue = makeNode("color", 0, 0, { color: { hex: "#000099", alpha: 1 } });
+    const left = makeNode("size", 0, 0);
+    const right = makeNode("size", 0, 0);
+    const combined: Graph = { nodes: [red, blue, left, right, add, output], variables: [], edges: [
+      { from: red.id, to: left.id, input: "image" },
+      { from: blue.id, to: right.id, input: "image" },
+      { from: left.id, to: add.id, input: "a" },
+      { from: right.id, to: add.id, input: "b" },
+      { from: add.id, to: output.id, input: "image" },
+    ] };
+    withRenderer((renderer, canvas) => {
+      const frames = new FrameRenderer(renderer, createVideoPoolManager({ resolveMediaUrl: name => name }), createMetrics());
+      const { screens, namedScreens } = compileLiveGraph(combined);
+      frames.render(screens, namedScreens, 0.25, 1, 0.25);
+      expect(readPixel(canvas, 50, 50)).toEqual([153, 0, 153, 255]);
+    });
+  });
+
   it("uses ramp luminance as per-pixel Float values through math and variables to drive Opacity", () => {
     initRegistry();
     const ramp = makeNode("colorRamp", 0, 0);
@@ -815,7 +968,7 @@ describe("NodesDevil graph", () => {
     const sampleScale = (item: Graph) => compileLiveGraph(item).screens[0].queryArc(0.375, 0.375)[0].value.scaleX;
     expect(sampleScale(graph)).toBe(1);
     expect(sampleScale({ ...graph, nodes: graph.nodes.map(node => node === rate ? { ...node, data: { ...node.data, mode: "fast" } } : node) })).toBe(2);
-    expect(referenceNode("slow", [])).toEqual({ kind: "signalRate", data: { mode: "slow" } });
+    expect(referenceNode("slow", [])).toBeUndefined();
   });
 
   it("retains a Stack cable while its socket is hidden in another mode", () => {

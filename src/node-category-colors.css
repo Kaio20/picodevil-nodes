@@ -14,7 +14,7 @@
 /* Node categories */
 #node-editor [data-category="Sources"]   { --nd-category-color: #5ba8ff; --nd-category-fg-fallback: var(--fg-bright); }
 #node-editor [data-category="Signals"]   { --nd-category-color: #20b562; }
-#node-editor [data-category="Expressions"] { --nd-category-color: #beeb71; }
+#node-editor [data-category="Expressions"] { --nd-category-color: #cf3c71; }
 #node-editor [data-category="Playback"]  { --nd-category-color: #f68f37; }
 #node-editor [data-category="Layout"]    { --nd-category-color: #ffe737; }
 #node-editor [data-category="Image"]     { --nd-category-color: #25e2cd; --nd-category-fg-fallback: var(--fg-bright); }

@@ -41,20 +41,10 @@ export class CpsController {
   }
 
   setCps(cps: number | Pattern, nowMs: number): void {
+    const { cycle } = this.tick(nowMs);
+    this._accumulatedCycle = cycle;
     if (typeof cps === "number") {
-      if (cps === 0) {
-        const nowSec = (nowMs - this._startMs) / 1000;
-        this._accumulatedCycle = nowSec * this._cyclesPerSecond;
-        this._cyclesPerSecond = 0;
-        this._cpsPattern = null;
-        return;
-      }
-      const nowSec = (nowMs - this._startMs) / 1000;
-      // When frozen (cyclesPerSecond=0), the real position is in accumulatedCycle
-      const currentCycle = this._cyclesPerSecond === 0
-        ? this._accumulatedCycle
-        : nowSec * this._cyclesPerSecond;
-      this._startMs = nowMs - (currentCycle / cps) * 1000;
+      if (cps !== 0) this._startMs = nowMs - (cycle / cps) * 1000;
       this._cyclesPerSecond = cps;
       this._cpsPattern = null;
     } else {

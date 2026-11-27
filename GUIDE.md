@@ -8,7 +8,7 @@ NodesDevil is a node editor for live visuals, built on Pico Devil and the rhythm
 npm install && npm run dev
 ```
 
-Open the browser to work in the node graph. Select **Code** to open the text editor. Press **Ctrl/Cmd+Enter** to run the active workspace.
+Open the browser to work in the node graph. Select **Code** to open the text editor, or **Export Code** to translate the current draft into runnable PicoDevil code. The export follows the connections to each Output. A Position node becomes `.x(...)` and `.y(...)`, and cables from signal nodes become expressions in those arguments. Specialized operations such as pixel fields use the NodesDevil runtime. Copy the result into the code editor or share the workspace URL. Select **Nodes** to continue editing, then export again to update the code. Press **Ctrl/Cmd+Enter** to run the active workspace.
 
 ## Variables in the node graph
 

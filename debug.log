@@ -1,0 +1,19 @@
+[1127/084422.705:WARNING:net\dns\dns_config_service_win.cc:606] Failed to read DnsConfig.
+[1127/084426.403:WARNING:ui\gl\angle_platform_impl.cc:52] HLSLCompiler.cpp:254 (rx::HLSLCompiler::compileToBinary): 
+C:\fakepath(167,1): warning X4000: use of potentially uninitialized variable (f_sampleAny_intLod0)
+C:\fakepath(712,1): warning X4000: use of potentially uninitialized variable (f_smearSample_float4_float4Lod0)
+C:\fakepath(167,1): warning X4000: use of potentially uninitialized variable (f_sampleAny_intLod0)
+
+[1127/084427.716:WARNING:net\dns\dns_config_service_win.cc:606] Failed to read DnsConfig.
+[1127/084437.720:WARNING:net\dns\dns_config_service_win.cc:606] Failed to read DnsConfig.
+[1127/084441.685:WARNING:net\dns\dns_config_service_win.cc:606] Failed to read DnsConfig.
+[1127/084444.451:WARNING:media\filters\ffmpeg_demuxer.cc:1216] PipelineStatus::DEMUXER_ERROR_COULD_NOT_OPEN
+[1127/084445.574:WARNING:ui\gl\angle_platform_impl.cc:52] HLSLCompiler.cpp:254 (rx::HLSLCompiler::compileToBinary): 
+C:\fakepath(167,1): warning X4000: use of potentially uninitialized variable (f_sampleAny_intLod0)
+C:\fakepath(712,1): warning X4000: use of potentially uninitialized variable (f_smearSample_float4_float4Lod0)
+C:\fakepath(167,1): warning X4000: use of potentially uninitialized variable (f_sampleAny_intLod0)
+
+[1127/084457.192:WARNING:ui\gl\angle_platform_impl.cc:52] HLSLCompiler.cpp:254 (rx::HLSLCompiler::compileToBinary): 
+C:\fakepath(147,3-70): warning X3557: loop only executes for 1 iteration(s), forcing loop to unroll
+
+[1127/084457.734:WARNING:net\dns\dns_config_service_win.cc:606] Failed to read DnsConfig.

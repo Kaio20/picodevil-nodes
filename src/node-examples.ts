@@ -42,7 +42,7 @@ export function createExampleGraph(name: ExampleName): Graph {
     case "space_tv": {
       output(1, 0, media(0, 0, "#222"));
       const scanFit = image("fit", 1, 2, media(0, 2, "scanlines"), { mode: "tile" });
-      const scan = image("renderLayer", 3, 2, image("scale", 2, 2, scanFit, { value: 10 }));
+      const scan = image("renderLayer", 3, 2, image("scale", 2, 2, scanFit, { value: 10 }), { name: "scan" });
       const scanBlend = image("blend", 4, 2, scan, { mode: "multiply" });
       const overlay = image("alpha", 5, 2, scanBlend, { value: 0.4 });
       const clips = media(0, 1, "issexercise1, issexercise2, issexercise3, issdock, issmodule, tvsnow, testcard");
@@ -50,10 +50,11 @@ export function createExampleGraph(name: ExampleName): Graph {
       const seed = signal("segment", 2, 0, add("rand", 1, 0.5), 1);
       const shuffled = add("index", 2, 1, { mode: "shuffle" }, { image: sync, seed });
       const stack = add("stack", 6, 1, {}, { image: shuffled, second: overlay });
-      const grid = image("grid", 7, 1, stack, { rows: 3, columns: 4 });
-      const scale = image("scale", 8, 1, grid, { value: 0.9 });
-      const barrel = image("barrel", 9, 1, scale, { value: 0.7 });
-      output(11, 1, image("chance", 10, 1, barrel, { mode: "crop", x: -1, y: -1 }));
+      const dimensions = image("grid", 7, 1, stack, { mode: "dimensions", rows: 3, columns: 4 });
+      const grid = image("grid", 8, 1, dimensions);
+      const scale = image("scale", 9, 1, grid, { value: 0.9 });
+      const barrel = image("barrel", 10, 1, scale, { value: 0.7 });
+      output(12, 1, image("chance", 11, 1, barrel, { mode: "crop", x: -1, y: -1 }));
       break;
     }
     case "canalslices": {

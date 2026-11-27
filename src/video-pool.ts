@@ -23,6 +23,7 @@ export function computeExpectedFromEvent(
   return computeExpectedTime({
     currentCycle, eventBegin, cps: cps || 0.5,
     speed, loopStart, loopEnd, duration: dur, syncOffset,
+    elapsedSec: ev.sync == null && ev.rolling == null ? ev._playlistElapsed : undefined,
   });
 }
 

@@ -1,6 +1,7 @@
-import { cableType, fontAxisFor, fontVariationFor, isCablePoint, isFontVariation, isRampStops, keepCompatibleEdges, makeNode, MIN_GRAPH_ZOOM, nodeKinds, outputType, rampInterpolation, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
+import { cableType, fontAxisFor, fontVariationFor, isCablePoint, isFontVariation, isRampStops, keepCompatibleEdges, makeNode, migrateTempo, MIN_GRAPH_ZOOM, nodeKinds, outputType, rampInterpolation, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
 import { defaultGradient, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
 import { isColorValue, whiteColor } from "./color-value";
+import { CYCLES_PER_SECOND } from "./config";
 import type { GraphView } from "./node-editor";
 import type { FftConfig, UrlMediaEntry } from "./url-state";
 
@@ -16,6 +17,7 @@ export interface NodeSession {
 
 function validGraph(graph: Graph | undefined): graph is Graph {
   return Boolean(graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges) && Array.isArray(graph.variables) &&
+    (graph.tempo === undefined || (Number.isFinite(graph.tempo) && graph.tempo >= 0)) &&
     graph.nodes.every(node => node && typeof node.id === "string" && nodeKinds.includes(node.kind) &&
       Number.isFinite(node.x) && Number.isFinite(node.y) && node.data && typeof node.data === "object" &&
       (!isCablePoint(node) || (cableType(node) && (node.kind === "junction" || node.data.side === "source" || node.data.side === "target"))) &&
@@ -114,7 +116,7 @@ function restoreRamps(graph: Graph): Graph {
     return [imageEdge];
   });
   const variables = graph.variables.map(variable => oldVariables.has(variable?.id) ? { ...variable, type: "visual" as const } : variable);
-  return { nodes: [...nodes, ...addedNodes], edges: [...edges, ...addedEdges], variables };
+  return { ...graph, nodes: [...nodes, ...addedNodes], edges: [...edges, ...addedEdges], variables };
 }
 
 function restoreVariables(graph: Graph): Graph {
@@ -203,7 +205,7 @@ function restoreGraph(graph?: Graph): Graph | undefined {
     const formerVisual = source.kind === "color";
     return edge.input === "image" && (type === "visual" || (type === "color" && formerVisual)) ? { ...edge, legacyTextInput: true } : edge;
   });
-  return keepCompatibleEdges(next);
+  return migrateTempo(keepCompatibleEdges(next));
 }
 
 export function loadNodes(): NodeSession | undefined {
@@ -213,7 +215,14 @@ export function loadNodes(): NodeSession | undefined {
     const draft = restoreGraph(session.draft);
     if (!draft) return;
     session.draft = draft;
-    session.live = restoreGraph(session.live);
+    const live = restoreGraph(session.live);
+    const patch = (graph: Graph) => JSON.stringify([
+      graph.tempo ?? CYCLES_PER_SECOND * 60,
+      graph.nodes.map(({ id, kind, data }) => [id, kind, data]),
+      graph.edges,
+      graph.variables,
+    ]);
+    session.live = live && patch(live) === patch(draft) ? draft : live;
     if (!session.view || !Number.isFinite(session.view.x) || !Number.isFinite(session.view.y) || !Number.isFinite(session.view.zoom)) {
       session.view = { x: 0, y: 0, zoom: 1, previews: [] };
     }

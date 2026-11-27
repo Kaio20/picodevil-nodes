@@ -12,7 +12,7 @@ This is my first time building a tool where I have used an LLM in a major way. S
 
 Drag a clip from **Videos** into the graph and connect it to **Output**. Drag a socket onto empty space to find compatible nodes. Closing that menu without a selection disconnects the dragged cables. Alt-click a socket to disconnect immediately. Open a node's preview to see its result while editing. Press **Run** or **Ctrl/Cmd+Enter** when the graph is ready for the live output.
 
-Use **Examples** to load editable node graphs. For controls such as position, scroll, and scale, X and Y each have a separate input. Use **Open Output** to send the show to a separate window. Move it to the projector and double-click for fullscreen. **Projection** toggles the floating preview. Drag its top-left grip to resize the preview or its four corner handles to calibrate the output. The **Code** button opens the original text workspace.
+Use **Examples** to load editable node graphs. For controls such as position, scroll, and scale, X and Y each have a separate input. Use **Open Output** to send the show to a separate window. Move it to the projector and double-click for fullscreen. **Projection** toggles the floating preview. Drag its top-left grip to resize the preview or its four corner handles to calibrate the output. **Code** opens the text workspace. **Export Code** translates the current node draft into runnable PicoDevil code for copying or sharing.
 
 There's also an optional server, which will let you do things like transcode videos so they can be scrubbed backwards, and allow downloading from YouTube - see [picodevil-server](https://github.com/v21/picodevil-server) for details.
 

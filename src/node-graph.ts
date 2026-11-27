@@ -5,6 +5,17 @@ import { blendModes, fitModes } from "./renderer-interface";
 export type ValueType = "visual" | "textLayer" | "number" | "text" | "boolean" | "color";
 export type Literal = string | number | boolean | ColorValue | readonly RampStop[];
 export const MIN_GRAPH_ZOOM = 0.12;
+export const MAX_LIST_INPUTS = 32;
+export const VIDEO_TEST_CARD = "nodesdevil:test-card";
+
+export function listInputCount(node: GraphNode): number {
+  const count = node.data.inputCount;
+  return typeof count === "number" && Number.isFinite(count) ? Math.min(MAX_LIST_INPUTS, Math.max(1, Math.floor(count))) : 1;
+}
+
+export function listInputId(kind: "video" | "index", index: number): string {
+  return kind === "video" ? `clip-${index + 1}` : index === 0 ? "image" : `image-${index + 1}`;
+}
 
 export interface RampStop { readonly id: string; readonly position: number }
 const defaultRampStops = [{ id: "stop-start", position: 0 }, { id: "stop-end", position: 1 }];
@@ -36,6 +47,7 @@ export interface Socket {
   optional?: boolean;
   dragStep?: number;
   unitInterval?: boolean;
+  acceptedTypes?: readonly ValueType[];
 }
 
 interface NodeDefinition {
@@ -224,7 +236,16 @@ export function fontVariationFor(tag: string) {
 }
 
 export const catalog = {
-  media: { label: "Media", help: "Use a single image, video, or stream from the media library.", category: "Sources", inputs: [], output: "visual" },
+  media: { label: "Media", help: "Use a single image, video, or stream from the media library.", category: "Sources", inputs: [], output: "visual", hidden: true },
+  video: {
+    label: "Video", category: "Sources", inputs: [], output: "visual", reference: ["video"],
+    help: "Choose a video. Add another input to build a playlist or a cycle pattern.",
+    modes: [
+      { id: "clipEnd", label: "Until Clip Ends" },
+      { id: "listPerCycle", label: "List per Cycle" },
+      { id: "clipPerCycle", label: "One Video per Cycle" },
+    ],
+  },
   texture: { label: "Texture", help: "Choose an image from My textures, a texture pack, or an imported folder.", category: "Sources", inputs: [], output: "visual" },
   testCard: { label: "Test Card", help: "Generate the built-in test image to check the output and preview effects.", category: "Sources", inputs: [], output: "visual" },
   constant: {
@@ -258,6 +279,7 @@ export const catalog = {
       { id: "tri", label: "Triangle", reference: ["tri"] },
     ],
   },
+  time: { label: "Time", category: "Signals", inputs: [], output: "number", reference: ["time"], help: "Read the global transport in cycles. Multiply to set the speed of a motion branch." },
   rand: { label: "Random", reference: ["rand"], category: "Signals", inputs: [], output: "number" },
   fft: { label: "Audio FFT", reference: ["fft"], category: "Signals", inputs: [], output: "number" },
   numberPattern: { label: "Number Pattern", help: "Sequence numbers with mini-notation. For example, `0 1` plays both values in one cycle, and `<0 1>` alternates them across cycles.", category: "Signals", inputs: [text("pattern", "Pattern", "0 1")], output: "number" },
@@ -265,7 +287,7 @@ export const catalog = {
   choose: { label: "Choose Number", reference: ["choose"], category: "Signals", inputs: [text("choices", "Choices", "0, 1")], output: "number" },
   segment: { label: "Segment", reference: ["segment"], category: "Signals", inputs: [signalInput, number("value", "Rate", 1)], output: "number" },
   signalRate: {
-    label: "Signal Rate", category: "Signals", inputs: [signalInput, number("value", "Factor", 2)], output: "number",
+    label: "Signal Rate", category: "Signals", inputs: [signalInput, number("value", "Factor", 2)], output: "number", hidden: true,
     modes: [
       { id: "fast", label: "Fast", reference: ["fast"], aliases: ["Fast Signal"] },
       { id: "slow", label: "Slow", reference: ["slow"], aliases: ["Slow Signal"] },
@@ -282,7 +304,7 @@ export const catalog = {
   convert: {
     label: "Conversion", category: "Expressions", inputs: [], modes: conversionModes,
   },
-  tempo: { label: "Tempo", reference: ["setCpm"], category: "Playback", inputs: [number("value", "CPM", 30, 1)] },
+  tempo: { label: "Tempo", reference: ["setCpm"], category: "Playback", inputs: [number("value", "CPM", 30, 1)], hidden: true },
   speed: { ...effect("Speed", "speed", number("value", "Speed", 1)), category: "Playback" },
   sync: {
     label: "Sync", category: "Playback", inputs: [imageInput], output: "visual",
@@ -379,7 +401,7 @@ export const catalog = {
     label: "Variable", aliases: ["Get Variable", "Set Variable"], category: "Variables", inputs: [], outputLabel: "Get Value",
     help: "Connect a value to set the variable. Without an input cable, the node reads the variable. Each variable can have one connected setter.",
   },
-  output: { label: "Output", help: "Send an image to the final composition. With multiple outputs, layers are drawn from the lowest number to the highest.", category: "Output", inputs: [imageInput] },
+  output: { label: "Output", help: "Send an image to the final composition. Layer 1 is at the back. Higher layers are drawn over it.", category: "Output", inputs: [imageInput] },
   junction: { label: "Junction", category: "Routing", inputs: [], hidden: true },
   cableEnd: { label: "Loose cable end", category: "Routing", inputs: [], hidden: true },
 } satisfies Record<string, NodeDefinition>;
@@ -389,6 +411,11 @@ export const nodeKinds = Object.keys(catalog) as NodeKind[];
 export const valueTypes: ValueType[] = ["number", "text", "boolean", "color", "visual", "textLayer"];
 export const fftBands = ["vol", "bass", "mid", "treble"] as const;
 export type Band = typeof fftBands[number];
+
+export const testCardStrips = [
+  { colors: ["#eeeeee", "#e4de37", "#59e4dd", "#4dd45b", "#df59e5", "#e14849", "#445ae2"], y: 0.36, height: 0.72 },
+  { colors: ["#121212", "#373737", "#797979", "#a5a5a5", "#eaeaea"], y: 0.86, height: 0.28 },
+];
 
 export interface GraphNode {
   id: string;
@@ -400,7 +427,7 @@ export interface GraphNode {
 
 export interface GraphEdge { from: string; to: string; input: string; output?: string; legacyTextInput?: true; legacyColorInput?: true }
 export interface Variable { id: string; name: string; type: ValueType }
-export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; variables: Variable[] }
+export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; variables: Variable[]; tempo?: number }
 export type NodeDrop = { kind: NodeKind; data?: Record<string, Literal> };
 
 export function makeNode(kind: NodeKind, x: number, y: number, data: Record<string, Literal> = {}): GraphNode {
@@ -488,9 +515,46 @@ export function isVariableSetter(graph: Graph, node: GraphNode): boolean {
   return node.kind === "variable" && hasConnectedInput(graph, node.id, "value");
 }
 
-export function outputType(graph: Graph, node: GraphNode, output?: string): ValueType | undefined {
+export function migrateTempo(graph: Graph): Graph {
+  const nodes = graph.nodes.filter(node => node.kind === "tempo");
+  if (!nodes.length || nodes.some(node => graph.edges.some(edge => edge.to === node.id || edge.from === node.id))) return graph;
+  const value = nodes.at(-1)?.data.value;
+  return { ...graph, tempo: typeof value === "number" && value >= 0 ? value : 30,
+    nodes: graph.nodes.filter(node => node.kind !== "tempo") };
+}
+
+const addTypes: readonly ValueType[] = ["number", "color", "visual", "textLayer"];
+
+export function expressionInputType(graph: Graph, node: GraphNode, input: string, seen?: Set<string>): ValueType | undefined {
+  const edge = graph.edges.find(item => item.to === node.id && item.input === input);
+  const source = edge && graph.nodes.find(item => item.id === edge.from);
+  return source && outputType(graph, source, edge.output, seen);
+}
+
+export function expressionOutputType(graph: Graph, node: GraphNode, seen = new Set<string>()): ValueType | undefined {
+  if (seen.has(node.id)) return;
+  seen.add(node.id);
+  try {
+    const a = expressionInputType(graph, node, "a", seen);
+    const b = expressionInputType(graph, node, "b", seen);
+    if (modeFor(node)?.id === "add") {
+      if (isRenderable(a) || isRenderable(b)) return "visual";
+      if (a === "color" || b === "color") return "color";
+      if ((!a && !b) || ((a ?? b) === "number" && (!a || !b))) {
+        const edge = graph.edges.find(item => item.from === node.id);
+        const target = edge && graph.nodes.find(item => item.id === edge.to);
+        const type = target && inputsFor(graph, target, true).find(socket => socket.id === edge.input)?.type;
+        if (type === "visual" || type === "color") return type;
+      }
+    }
+    return a || b || graph.edges.some(edge => edge.from === node.id) ? "number" : undefined;
+  } finally { seen.delete(node.id); }
+}
+
+export function outputType(graph: Graph, node: GraphNode, output?: string, seen?: Set<string>): ValueType | undefined {
   if (output !== undefined) return definition(node.kind).extraOutputs?.find(socket => socket.id === output)?.type;
   if (node.kind === "variable") return variableFor(graph, node)?.type;
+  if (node.kind === "expression") return expressionOutputType(graph, node, seen);
   if (node.kind === "constant") return modeFor(node)?.inputs?.[0]?.type;
   if (node.kind === "junction" || (node.kind === "cableEnd" && node.data.side === "source")) return cableType(node);
   if (node.kind === "convert" && !graph.edges.some(edge => edge.from === node.id)) return;
@@ -510,6 +574,16 @@ export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false
   }
   if (node.kind !== "variable") {
     const def = definition(node.kind);
+    if (node.kind === "video") return Array.from({ length: listInputCount(node) }, (_, index) =>
+      ({ id: listInputId("video", index), label: `Video ${index + 1}`, type: "text", optional: true }));
+    if (node.kind === "index" && listInputCount(node) > 1) {
+      const images = Array.from({ length: listInputCount(node) }, (_, index) =>
+        ({ ...imageInput, id: listInputId("index", index), label: `Image ${index + 1}`, optional: true }));
+      return [...images, ...(modeFor(node)?.inputs ?? [])];
+    }
+    if (node.kind === "expression" && modeFor(node)?.id === "add" && !includeInactive) {
+      return (modeFor(node)?.inputs ?? []).map(socket => ({ ...socket, acceptedTypes: addTypes }));
+    }
     if (node.kind === "colorRamp") {
       const stops = rampStops(node).map(({ id }, index): Socket => ({
         id, label: `Color ${index + 1}`, type: "color", default: id === "stop-start" ? blackColor : whiteColor,
@@ -537,6 +611,7 @@ export function isRenderable(type: ValueType | undefined) {
 
 export function inputType(graph: Graph, node: GraphNode, input: string): ValueType | undefined {
   if (node.kind === "convert" && !graph.edges.some(edge => edge.to === node.id && edge.input === input)) return;
+  if (node.kind === "expression") return expressionInputType(graph, node, input);
   return inputsFor(graph, node).find(socket => socket.id === input)?.type;
 }
 
@@ -586,10 +661,10 @@ function automaticConversionMode(input?: ValueType, output?: ValueType) {
 }
 
 function acceptsType(input: Socket, output: ValueType) {
-  return input.type === output || (output === "textLayer" && input.acceptsTextLayer) || (output === "color" && input.type === "visual");
+  return input.type === output || input.acceptedTypes?.includes(output) || (output === "textLayer" && input.acceptsTextLayer) || (output === "color" && input.type === "visual");
 }
 
-export function withEdge(graph: Graph, edge: GraphEdge, inferConversion = true): Graph | undefined {
+export function withEdge(graph: Graph, edge: GraphEdge, inferConversion = true, typingGraph = graph): Graph | undefined {
   const source = graph.nodes.find(node => node.id === edge.from);
   const target = graph.nodes.find(node => node.id === edge.to);
   if (!source || !target || source === target) return;
@@ -599,7 +674,10 @@ export function withEdge(graph: Graph, edge: GraphEdge, inferConversion = true):
   let input = inputsFor(graph, to).find(socket => socket.id === edge.input)
     ?? (to.kind !== "convert" ? inputsFor(graph, to, true).find(socket => socket.id === edge.input) : undefined);
   if (!input) return;
-  let output = outputType(graph, from, edge.output);
+  let output = outputType(typingGraph, from, edge.output);
+  if (from.kind === "expression" && !output) {
+    output = modeFor(from)?.id === "add" && (input.type === "visual" || input.type === "color") ? input.type : "number";
+  }
   if (from.kind === "convert" && edge.output === undefined && !output) {
     const current = modeFor(from);
     const matches = current?.output && (isCablePoint(to) ? current.output === input.type : acceptsType(input, current.output));
@@ -633,6 +711,22 @@ export function withEdge(graph: Graph, edge: GraphEdge, inferConversion = true):
   edges.push(edge);
   const nodes = from === source && to === target ? graph.nodes : graph.nodes.map(node => node === source ? from : node === target ? to : node);
   const next = { ...graph, nodes, edges };
+  if (inferConversion && to.kind === "expression") {
+    const affected = new Set([to]);
+    for (const expression of affected) {
+      const type = outputType(next, expression);
+      if (!type || type === outputType(graph, expression)) continue;
+      for (const item of edges) {
+        if (item.from !== expression.id) continue;
+        const destination = nodes.find(node => node.id === item.to);
+        if (!destination) continue;
+        const socket = inputsFor(next, destination).find(input => input.id === item.input)
+          ?? inputsFor(next, destination, true).find(input => input.id === item.input);
+        if (socket && (isCablePoint(destination) ? socket.type !== type : !acceptsType(socket, type))) return;
+        if (destination.kind === "expression") affected.add(destination);
+      }
+    }
+  }
   if (inferConversion && !acceptsPixelField(to, edge.input) && isPixelOutput(next, from, edge.output)) return;
   if (inferConversion && to.kind === "convert" && isPixelOutput(next, to) && !isPixelOutput(graph, target)) {
     // Completing a conversion can turn its already wired output into a pixel field.
@@ -714,6 +808,6 @@ export function insertNodeOnEdge(graph: Graph, node: GraphNode, target: GraphEdg
 export function keepCompatibleEdges(graph: Graph): Graph {
   let result: Graph = { ...graph, edges: [] };
   // Restore each edge using its saved conversion mode.
-  for (const edge of graph.edges) result = withEdge(result, edge, false) ?? result;
+  for (const edge of graph.edges) result = withEdge(result, edge, false, graph) ?? result;
   return pruneRoutingNodes(result);
 }
