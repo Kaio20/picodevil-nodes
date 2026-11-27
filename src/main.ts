@@ -24,10 +24,10 @@ import { showFatalOverlay, rendererFailureMessage } from "./fatal-overlay";
 import { FrameRenderer } from "./renderer";
 import type { Renderer } from "./renderer-interface";
 import { EvalController } from "./eval-controller";
-import { starterGraph, type Graph } from "./node-graph";
+import { graphTempoRate, starterGraph, type Graph } from "./node-graph";
 import { NodeEditor } from "./node-editor";
 import { compileLiveGraph, mediaUrl, NodePreviews, readLiveGraph, registerLiveGraph } from "./node-runtime";
-import { NodeMotions, NodeTransport } from "./node-transport";
+import { NodeMotions, NodeTime, NodeTransport } from "./node-transport";
 import { exportNodeCode } from "./node-code";
 import { NodeProjection } from "./node-projection";
 import { loadNodes, saveNodes, type NodeSession } from "./node-session";
@@ -127,7 +127,8 @@ const pool = createVideoPoolManager({
 const frameRenderer = new FrameRenderer(activeRenderer, pool, pdMetrics);
 const cpsController = new CpsController(CYCLES_PER_SECOND, performance.now());
 const nodeTransport = new NodeTransport();
-let liveMotions = new NodeMotions();
+const nodeTime = new NodeTime(CYCLES_PER_SECOND, performance.now());
+let liveMotions = new NodeMotions(nodeTime);
 
 /**
  * Sets the global cycles per second (tempo). Default is 0.5 (one cycle = 2 seconds).
@@ -231,8 +232,8 @@ function frame() {
   setRuntimeCps(cps);
   nodeTransport.advance(cycle, cps, rafAbsNow);
   if (mode === "nodes") {
+    nodeTime.advance(cycle, cps, rafAbsNow);
     liveMotions.advance(cycle);
-    nodeEditor.setTimeRate(cps);
   }
   fftUpdateFrame();
 
@@ -242,7 +243,7 @@ function frame() {
   // Test hook: expose the live loop's current frame coordinates so a capture
   // harness can phase-sample the running render (re-render the exact live cycle
   // for readback) instead of driving its own competing cycle.
-  (window as any).pdLiveFrame = { cycle, cps, wall: rafAbsNow };
+  (window as any).pdLiveFrame = { cycle, cps, wall: rafAbsNow, beats: nodeTime.position, timeRate: nodeTime.currentRate };
 
   const frameDuration = performance.now() - rafAbsNow;
   const perfMem = (performance as any).memory;
@@ -255,7 +256,7 @@ function frame() {
 
   flushWarnings();
   if (!nodeEditor.isMovingGraph) {
-    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, cps, canvas.width / canvas.height, nodeEditor.previewNode);
+    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, cps, nodeTime, canvas.width / canvas.height, nodeEditor.previewNode);
   }
 }
 document.addEventListener("visibilitychange", scheduleFrame);
@@ -359,15 +360,6 @@ const nodeEditor = new NodeEditor(nodeHost, {
   graph: session.draft,
   view: session.view,
   save: graph => { session.draft = graph; saveWorkspace(); },
-  setTempo: tempo => {
-    if (session.live?.nodes.some(node => node.kind === "tempo")) return;
-    const now = performance.now();
-    const frame = cpsController.tick(now);
-    nodeTransport.advance(frame.cycle, tempo / 60, now);
-    cpsController.setCpm(tempo, now);
-    nodeEditor.setTimeRate(tempo / 60);
-    if (session.live) session.live = { ...session.live, tempo };
-  },
   setMotionFactor: (id, input, value) => {
     if (!session.live) return false;
     const cycle = cpsController.tick(performance.now()).cycle;
@@ -380,7 +372,8 @@ const nodeEditor = new NodeEditor(nodeHost, {
     try {
       const now = performance.now();
       const phase = cpsController.tick(now);
-      const motions = new NodeMotions(restart ? undefined : liveMotions, restart ? 0 : phase.cycle);
+      nodeTime.advance(phase.cycle, phase.cps, now);
+      const motions = new NodeMotions(nodeTime, restart ? undefined : liveMotions, restart ? 0 : phase.cycle);
       const next = compileLiveGraph(graph, nodeTransport, motions);
       if (restart) {
         cpsController.reset(now);
@@ -388,7 +381,11 @@ const nodeEditor = new NodeEditor(nodeHost, {
       } else nodeTransport.advance(phase.cycle, phase.cps, now);
       liveMotions = motions;
       restoreRegistry(next.registry);
-      cpsController.setCpm(next.tempo, now);
+      if (graph.nodes.some(node => node.kind === "tempo")) cpsController.setCpm(next.tempo, now);
+      else if (cpsController.cpsPattern || cpsController.cyclesPerSecond !== CYCLES_PER_SECOND) cpsController.setCps(CYCLES_PER_SECOND, now);
+      nodeTime.setRate(graphTempoRate(graph), now, restart);
+      const playback = cpsController.tick(now);
+      nodeTime.advance(playback.cycle, playback.cps, now);
       evalController.screens = next.screens;
       evalController.namedScreens = next.namedScreens;
       session.live = graph;

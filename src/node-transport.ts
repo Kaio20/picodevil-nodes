@@ -1,5 +1,6 @@
 import { Pattern, signal } from "@strudel/core";
 import { CYCLES_PER_SECOND } from "./config";
+import { CpsController } from "./cps-controller";
 
 export function wrapCycle(value: number): number {
   return ((value % 1) + 1) % 1;
@@ -9,7 +10,6 @@ interface MotionSegment { cycle: number; source: number; position: number; facto
 
 /** The transport owns updates. Pattern queries can sample past or future cycles without advancing it. */
 export class NodeTransport {
-  readonly rateSignal = signal(() => this.cps);
   private cycle = 0;
   private seconds = 0;
   private wall?: number;
@@ -45,6 +45,38 @@ export class NodeTransport {
 
   cycleAt(seconds: number): number {
     return this.cycle + (seconds - this.seconds) * (this.cps || CYCLES_PER_SECOND);
+  }
+}
+
+/** Time nodes are measured in beats against wall time. Patterns still query in playback cycles. */
+export class NodeTime {
+  readonly beatsSignal = signal((cycle: number) =>
+    this.beats + (this.playbackCps > 0 ? (Number(cycle) - this.playbackCycle) * this.rate / this.playbackCps : 0));
+  readonly rateSignal = signal(() => this.rate);
+  private readonly clock: CpsController;
+  private playbackCycle = 0;
+  private playbackCps = CYCLES_PER_SECOND;
+  private beats = 0;
+
+  constructor(private rate: number, now = 0) {
+    this.clock = new CpsController(rate, now);
+  }
+
+  get position() { return this.beats; }
+  get currentRate() { return this.rate; }
+
+  setRate(rate: number, now: number, restart = false) {
+    if (restart) this.clock.reset(now);
+    if (restart || rate !== this.rate) {
+      this.clock.setCps(rate, now);
+      this.rate = rate;
+    }
+  }
+
+  advance(playbackCycle: number, playbackCps: number, now: number) {
+    this.playbackCycle = playbackCycle;
+    this.playbackCps = playbackCps;
+    this.beats = this.clock.tick(now).cycle;
   }
 }
 
@@ -103,11 +135,12 @@ class Motion {
 }
 
 export class NodeMotions {
-  readonly time = signal((cycle: number) => Number(cycle));
   private tracks = new Map<string, Motion>();
-  private signals = new WeakSet<Pattern>([this.time]);
+  private signals: WeakSet<Pattern>;
 
-  constructor(private previous?: NodeMotions, private cycle = 0) {}
+  constructor(readonly time = new NodeTime(CYCLES_PER_SECOND), private previous?: NodeMotions, private cycle = 0) {
+    this.signals = new WeakSet<Pattern>([time.beatsSignal]);
+  }
 
   isTime(value: unknown): value is Pattern {
     return value instanceof Pattern && this.signals.has(value);

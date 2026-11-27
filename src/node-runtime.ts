@@ -9,21 +9,21 @@ import { fft, previewFft } from "./fft-audio";
 import { isTexture, resolveMedia, resolveMediaId } from "./media-registry";
 import { resolveUrl } from "./server-config";
 import { catalogTexture } from "./texture-library";
-import { CYCLES_PER_SECOND, getRuntimeCps, setRuntimeCps } from "./config";
+import { getRuntimeCps, setRuntimeCps } from "./config";
 import { createMetrics } from "./frame-metrics";
 import { FrameRenderer } from "./renderer";
 import { WebGLRenderer } from "./webgl-renderer";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { hashStr, withLayoutCounter } from "./layout-counter";
 import { collectScreens, getNamedScreenIndices, nextAutoRenderName, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
-import { acceptsPixelField, expressionInputType, expressionOperations, fftBands, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, listInputCount, listInputId, modeFor, outputType, previewType, rampInterpolation, rampStops, signalGraph, testCardStrips, variableFor, VIDEO_TEST_CARD, type Band, type Graph, type GraphEdge, type GraphNode, type Literal } from "./node-graph";
+import { acceptsPixelField, expressionInputType, expressionOperations, fftBands, graphTempoRate, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, listInputCount, listInputId, modeFor, outputType, previewType, rampInterpolation, rampStops, signalGraph, testCardStrips, variableFor, VIDEO_TEST_CARD, type Band, type Graph, type GraphEdge, type GraphNode, type Literal } from "./node-graph";
 import { gradientSampler, type Gradient } from "./gradient";
 import { colorRamp } from "./effects-controls";
 import { clampUnit, colorCss, colorFromCss, colorHex, isColorValue, rgbFromHex, rgbHex, whiteColor, type ColorValue } from "./color-value";
 import type { PixelExpression, PixelOperator, PixelRaster } from "./pixel-field";
 import { index } from "./index-patterns";
 import "./shuffle-stack";
-import { NodeMotions, NodeTransport, wrapCycle } from "./node-transport";
+import { NodeMotions, NodeTime, NodeTransport, wrapCycle } from "./node-transport";
 import { nodeVideoPattern } from "./node-video";
 
 export function mediaUrl(name: string, base: string): string {
@@ -169,7 +169,7 @@ interface RuntimeContext {
 
 function buildValues(
   graph: Graph, preview: boolean,
-  transport = new NodeTransport(graph.tempo === undefined ? CYCLES_PER_SECOND : graph.tempo / 60), motions = new NodeMotions(),
+  transport = new NodeTransport(), motions = new NodeMotions(new NodeTime(graphTempoRate(graph))),
 ) {
   const values = new Map<string, Value>();
   const visiting = new Set<string>();
@@ -237,7 +237,7 @@ function buildNode(
   const mode = modeFor(node)?.id;
   const wrapTime = (value: Value) => context.motions.isTime(value) ? value.withValue(wrapCycle) : value;
   switch (node.kind) {
-    case "time": return output === "rate" ? context.transport.rateSignal : context.motions.time;
+    case "time": return output === "rate" ? context.motions.time.rateSignal : context.motions.time.beatsSignal;
     case "video": return nodeVideoPattern(node.id, Array.from({ length: listInputCount(node) }, (_, i) =>
       input[listInputId("video", i)] as string | Pattern ?? ""), mode ?? "clipEnd", context.transport);
     case "media":
@@ -482,11 +482,14 @@ function buildNode(
 
 function previewKey(target: PreviewTarget) { return JSON.stringify([target.id, Boolean(target.showRamp)]); }
 
-function registerGraph(draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport, motions = new NodeMotions()) {
+function registerGraph(
+  draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport,
+  motions = new NodeMotions(new NodeTime(graphTempoRate(draft))),
+) {
   const graph = signalGraph(draft);
   const previews = new Map<string, PreviewValue>();
   const read = buildValues(graph, targets !== undefined, transport, motions);
-  let tempo: Value = graph.tempo ?? CYCLES_PER_SECOND * 60;
+  let tempo: Value = graph.tempoRate === undefined && graph.tempo !== undefined ? graph.tempo : graphTempoRate(graph) * 60;
   const tempoNode = graph.nodes.filter(node => node.kind === "tempo").at(-1);
   if (tempoNode) {
     try { tempo = read(tempoNode.id); }
@@ -515,17 +518,17 @@ function registerGraph(draft: Graph, targets?: readonly PreviewTarget[], transpo
     for (const node of outputs) call(read(node.id) as Pattern, "p", "$");
   }
   motions.finish();
-  return { tempo: tempo as number | Pattern, previews };
+  return { tempo: tempo as number | Pattern, previews, motions };
 }
 
-function compile(draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport, motions = new NodeMotions()) {
+function compile(draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport, motions?: NodeMotions) {
   const previous = snapshotRegistry();
   resetRegistry();
   try {
-    const { tempo, previews } = registerGraph(draft, targets, transport, motions);
+    const result = registerGraph(draft, targets, transport, motions);
     const screens = collectScreens();
     const namedScreens = getNamedScreenIndices();
-    return { screens, namedScreens, registry: snapshotRegistry(), tempo, previews, motions };
+    return { ...result, screens, namedScreens, registry: snapshotRegistry() };
   } finally { restoreRegistry(previous); }
 }
 
@@ -561,7 +564,7 @@ export class NodePreviews {
   private idleSince = 0;
   private unavailable = false;
 
-  draw(graph: Graph, visibleTargets: () => PreviewTarget[], now: number, cycle: number, cps: number, ratio: number, priority?: string) {
+  draw(graph: Graph, visibleTargets: () => PreviewTarget[], now: number, cycle: number, cps: number, time: NodeTime, ratio: number, priority?: string) {
     if (now < this.nextFrame) return;
     this.nextFrame = now + 1000 / 15;
     const visible = visibleTargets();
@@ -591,7 +594,7 @@ export class NodePreviews {
     if (!this.result || this.graph !== graph || this.signature !== signature) {
       this.graph = graph;
       this.signature = signature;
-      this.result = compile(graph, batch, this.transport, new NodeMotions(this.result?.motions, cycle));
+      this.result = compile(graph, batch, this.transport, new NodeMotions(time, this.result?.motions, cycle));
     }
     const result = this.result;
     result.motions.advance(cycle);

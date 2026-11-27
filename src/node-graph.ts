@@ -1,12 +1,14 @@
 import { defaultGradient, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
 import { whiteColor, type ColorValue } from "./color-value";
 import { blendModes, fitModes } from "./renderer-interface";
+import { CYCLES_PER_SECOND } from "./config";
 
 export type ValueType = "visual" | "textLayer" | "number" | "text" | "boolean" | "color";
 export type Literal = string | number | boolean | ColorValue | readonly RampStop[];
 export const MIN_GRAPH_ZOOM = 0.12;
 export const MAX_LIST_INPUTS = 32;
 export const VIDEO_TEST_CARD = "nodesdevil:test-card";
+const DEFAULT_TEMPO_RATE = 0.1;
 
 export function listInputCount(node: GraphNode): number {
   const count = node.data.inputCount;
@@ -241,9 +243,9 @@ export const catalog = {
     label: "Video", category: "Sources", inputs: [], output: "visual", reference: ["video"],
     help: "Choose a video. Add another input to build a playlist or a cycle pattern.",
     modes: [
-      { id: "clipEnd", label: "Until Clip Ends" },
-      { id: "listPerCycle", label: "List per Cycle" },
-      { id: "clipPerCycle", label: "One Video per Cycle" },
+      { id: "clipEnd", label: "Full", aliases: ["Until Clip Ends"], help: "Play each clip for its full duration." },
+      { id: "listPerCycle", label: "Split", aliases: ["List per Cycle"], help: "Split one cycle evenly across the video list." },
+      { id: "clipPerCycle", label: "Alternate", aliases: ["One Video per Cycle"], help: "Play one entry per cycle in list order." },
     ],
   },
   texture: { label: "Texture", help: "Choose an image from My textures, a texture pack, or an imported folder.", category: "Sources", inputs: [], output: "visual" },
@@ -282,7 +284,7 @@ export const catalog = {
   time: {
     label: "Time", category: "Signals", inputs: [], output: "number", outputLabel: "Beats", reference: ["time"],
     extraOutputs: [{ id: "rate", label: "Rate", type: "number" }],
-    help: "Beats advances by 1 per beat. Rate gives beats per second: 1 at 60 BPM.",
+    help: "Rate matches the global Tempo in beats per second. Beats accumulates at that rate.",
   },
   rand: { label: "Random", reference: ["rand"], category: "Signals", inputs: [], output: "number" },
   fft: { label: "Audio FFT", reference: ["fft"], category: "Signals", inputs: [], output: "number" },
@@ -431,8 +433,19 @@ export interface GraphNode {
 
 export interface GraphEdge { from: string; to: string; input: string; output?: string; legacyTextInput?: true; legacyColorInput?: true }
 export interface Variable { id: string; name: string; type: ValueType }
-export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; variables: Variable[]; tempo?: number }
+export interface Graph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  variables: Variable[];
+  tempoRate?: number;
+  /** Tempo in cycles per minute in older patches. */
+  tempo?: number;
+}
 export type NodeDrop = { kind: NodeKind; data?: Record<string, Literal> };
+
+export function graphTempoRate(graph: Graph): number {
+  return graph.tempoRate ?? (graph.tempo === undefined ? DEFAULT_TEMPO_RATE : graph.tempo / 60);
+}
 
 export function makeNode(kind: NodeKind, x: number, y: number, data: Record<string, Literal> = {}): GraphNode {
   return { id: crypto.randomUUID(), kind, x, y, data };
@@ -441,7 +454,7 @@ export function makeNode(kind: NodeKind, x: number, y: number, data: Record<stri
 export function starterGraph(): Graph {
   const card = makeNode("testCard", 64, 96);
   const output = makeNode("output", 330, 96);
-  return { nodes: [card, output], edges: [{ from: card.id, to: output.id, input: "image" }], variables: [], tempo: 60 };
+  return { nodes: [card, output], edges: [{ from: card.id, to: output.id, input: "image" }], variables: [], tempoRate: DEFAULT_TEMPO_RATE };
 }
 
 export function definition(kind: NodeKind): NodeDefinition {
@@ -523,7 +536,7 @@ export function migrateTempo(graph: Graph): Graph {
   const nodes = graph.nodes.filter(node => node.kind === "tempo");
   if (!nodes.length || nodes.some(node => graph.edges.some(edge => edge.to === node.id || edge.from === node.id))) return graph;
   const value = nodes.at(-1)?.data.value;
-  return { ...graph, tempo: typeof value === "number" && value >= 0 ? value : 30,
+  return { ...graph, tempo: undefined, tempoRate: typeof value === "number" && value >= 0 ? value / 60 : CYCLES_PER_SECOND,
     nodes: graph.nodes.filter(node => node.kind !== "tempo") };
 }
 

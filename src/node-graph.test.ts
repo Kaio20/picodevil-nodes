@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cableInput, inputType, inputsFor, insertNodeOnEdge, isAutomaticConversion, isVariableSetter, keepCompatibleEdges, makeNode, outputsFor, outputType, pruneRoutingNodes, referenceNode, starterGraph, valueTypes, withConvertedEdge, withEdge, type Graph } from "./node-graph";
+import { cableInput, graphTempoRate, inputType, inputsFor, insertNodeOnEdge, isAutomaticConversion, isVariableSetter, keepCompatibleEdges, makeNode, outputsFor, outputType, pruneRoutingNodes, referenceNode, starterGraph, valueTypes, withConvertedEdge, withEdge, type Graph } from "./node-graph";
 import { compileLiveGraph } from "./node-runtime";
 import { initRegistry, snapshotRegistry } from "./pattern-registry";
 import { loadNodes, saveNodes } from "./node-session";
@@ -9,13 +9,13 @@ import { FrameRenderer } from "./renderer";
 import { createMetrics } from "./frame-metrics";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { readPixel, withRenderer } from "./webgl-test-helpers";
-import { NodeMotions, NodeTransport } from "./node-transport";
+import { NodeMotions, NodeTime, NodeTransport } from "./node-transport";
 import { CpsController } from "./cps-controller";
 import { nodeVideoPattern } from "./node-video";
 import { initRegistry as initMediaRegistry } from "./media-registry";
 
 describe("NodesDevil graph", () => {
-  it("keeps Time's rate independent of frame intervals and follows live tempo changes", () => {
+  it("advances Time at its own rate across frame gaps while video uses elapsed playback time", () => {
     initRegistry();
     const time = makeNode("time", 0, 0);
     const color = makeNode("color", 0, 0);
@@ -25,22 +25,38 @@ describe("NodesDevil graph", () => {
       { from: time.id, output: "rate", to: rotate.id, input: "value" },
       { from: color.id, to: rotate.id, input: "image" },
       { from: rotate.id, to: output.id, input: "image" },
-    ], variables: [], tempo: 60 };
+    ], variables: [], tempoRate: 1 };
+    expect(graphTempoRate({ ...graph, tempoRate: undefined })).toBe(0.1);
+    const storedRate = 0.0017;
+    const stored = compileLiveGraph({ ...graph, tempoRate: storedRate });
+    expect(stored.screens[0].queryArc(0, 0)[0].value.rotateZ).toBe(storedRate);
     const transport = new NodeTransport();
-    const { screens } = compileLiveGraph(keepCompatibleEdges(graph), transport);
-    const clock = new CpsController(1, 1000);
-    const sample = (ms: number) => {
-      const { cycle, cps } = clock.tick(ms);
-      transport.advance(cycle, cps, ms);
-      return { cycle, rate: screens[0].queryArc(cycle, cycle)[0].value.rotateZ };
-    };
-    expect(sample(1020)).toEqual({ cycle: 0.02, rate: 1 });
-    expect(sample(2500)).toEqual({ cycle: 1.5, rate: 1 });
-    clock.setCpm(120, 2500);
-    expect(sample(2500)).toEqual({ cycle: 1.5, rate: 2 });
-    expect(sample(3000)).toEqual({ cycle: 2.5, rate: 2 });
-    clock.setCpm(0, 3000);
-    expect(sample(5000)).toEqual({ cycle: 2.5, rate: 0 });
+    const nodeTime = new NodeTime(1, 1000);
+    const { screens } = compileLiveGraph(keepCompatibleEdges(graph), transport, new NodeMotions(nodeTime));
+    const playback = new CpsController(0.5, 1000);
+    const clip = { id: "time-test-video", name: "time-test-video", url: "/time-test.mp4",
+      type: "video" as const, duration: 10, thumbnail: "/empty.png" };
+    initMediaRegistry([clip]);
+    try {
+      const video = nodeVideoPattern("time-test", [clip.id], "clipEnd", transport);
+      const sample = (ms: number) => {
+        const { cycle, cps } = playback.tick(ms);
+        transport.advance(cycle, cps, ms);
+        nodeTime.advance(cycle, cps, ms);
+        return {
+          beats: nodeTime.position,
+          rate: screens[0].queryArc(cycle, cycle)[0].value.rotateZ,
+          seconds: video.queryArc(cycle, cycle)[0].value._playlistElapsed,
+        };
+      };
+      expect(sample(1000)).toEqual({ beats: 0, rate: 1, seconds: 0 });
+      expect(sample(2500)).toEqual({ beats: 1.5, rate: 1, seconds: 1.5 });
+      nodeTime.setRate(2, 2500);
+      expect(sample(2500)).toEqual({ beats: 1.5, rate: 2, seconds: 1.5 });
+      expect(sample(3000)).toEqual({ beats: 2.5, rate: 2, seconds: 2 });
+      nodeTime.setRate(0, 3000);
+      expect(sample(5000)).toEqual({ beats: 2.5, rate: 0, seconds: 4 });
+    } finally { initMediaRegistry([]); }
   });
 
   it("keeps two Time branches independent through live factor edits and wraps a full turn", () => {
@@ -104,7 +120,7 @@ describe("NodesDevil graph", () => {
   it("restores matching live and draft patches even after moving a node", () => {
     const time = makeNode("time", 0, 0);
     const graph: Graph = { nodes: [time, makeNode("output", 220, 0)], edges: [], variables: [], tempo: 45 };
-    const draft = { ...graph, nodes: [{ ...time, x: 80 }, graph.nodes[1]] };
+    const draft = { ...graph, tempo: undefined, tempoRate: 0.75, nodes: [{ ...time, x: 80 }, graph.nodes[1]] };
     const key = "nodesdevil-session-v1";
     const previous = localStorage.getItem(key);
     try {
@@ -112,8 +128,10 @@ describe("NodesDevil graph", () => {
       saveNodes(session);
       const restored = loadNodes()!;
       expect(restored.live).toBe(restored.draft);
-      saveNodes({ ...session, draft: { ...draft, tempo: 60 } });
-      expect(loadNodes()?.live?.tempo).toBe(45);
+      saveNodes({ ...session, draft: { ...draft, tempoRate: 1.25 } });
+      const pending = loadNodes()!;
+      expect(graphTempoRate(pending.live!)).toBe(0.75);
+      expect(graphTempoRate(pending.draft)).toBe(1.25);
     } finally {
       if (previous === null) localStorage.removeItem(key);
       else localStorage.setItem(key, previous);

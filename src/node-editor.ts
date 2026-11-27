@@ -1,12 +1,11 @@
 import {
-  cableInput, cableType, definition, expressionInputType, fftBands, fontAxes, fontAxisFor, hasConnectedInput, inputType, inputsFor, insertNodeOnEdge, isCablePoint, isPixelOutput, isRenderable, isVariableSetter, keepCompatibleEdges, listInputCount, listInputId, makeNode, MAX_LIST_INPUTS, migrateTempo, MIN_GRAPH_ZOOM, modeFor, nodeKinds, outputsFor, outputType,
+  cableInput, cableType, definition, expressionInputType, fftBands, fontAxes, fontAxisFor, graphTempoRate, hasConnectedInput, inputType, inputsFor, insertNodeOnEdge, isCablePoint, isPixelOutput, isRenderable, isVariableSetter, keepCompatibleEdges, listInputCount, listInputId, makeNode, MAX_LIST_INPUTS, migrateTempo, MIN_GRAPH_ZOOM, modeFor, nodeKinds, outputsFor, outputType,
   previewType, pruneRoutingNodes, rampInterpolation, rampStops, valueTypes, variableFor, VIDEO_TEST_CARD, withConvertedEdge, withEdge, type Graph, type GraphEdge, type GraphNode,
   type Literal, type NodeDrop, type NodeMode, type ValueType,
 } from "./node-graph";
 import type { PreviewTarget } from "./node-runtime";
 import { setSidebarDropReceiver, type SidebarDropOptions } from "./node-sidebar-drag";
 import { getAllEntries, isTexture, mediaNodeDrop, type MediaEntry } from "./media-registry";
-import { CYCLES_PER_SECOND } from "./config";
 import { onVideoMetadata, videoDuration } from "./node-video";
 import { catalogTexture, getTexturePacks, useCatalogTexture } from "./texture-library";
 import { FONT_AXES } from "./font-list";
@@ -26,7 +25,6 @@ interface Options {
   view: GraphView;
   save(graph: Graph, view: GraphView): void;
   run(graph: Graph, restart: boolean): string | null;
-  setTempo(tempo: number): void;
   setMotionFactor(node: string, input: string, value: number): boolean;
   showCode(): void;
   exportCode(graph: Graph): void;
@@ -43,8 +41,9 @@ interface MenuChoice { drop: NodeDrop; name: string; category: string; modes?: N
 const svgNamespace = "http://www.w3.org/2000/svg";
 const portDropPadding = 10;
 const alignedNodeGap = 24;
+let nextWireGradient = 0;
 const typeLabels: Record<ValueType, string> = { visual: "Image", textLayer: "Text", number: "Float", text: "String", boolean: "Boolean", color: "Color" };
-const formatTimeRate = (rate: number) => String(Number(rate.toFixed(3)));
+const portColor = (type: ValueType) => `var(--nd-color-${type === "textLayer" ? "text" : type === "text" ? "string" : type})`;
 const categoryIcons: Record<string, string> = {
   Sources: "film-strip", Signals: "waveform", Expressions: "function", Playback: "play",
   Layout: "grid-four", Image: "image", Text: "text-t", Variables: "brackets-curly",
@@ -326,12 +325,10 @@ export class NodeEditor {
   private choicePreview?: { graph: Graph; id: string; original?: PreviewTarget; alternate?: PreviewTarget };
   private sourcePickers = new Map<string, ReturnType<typeof nodeChoiceField<string>>>();
   private videoRows = new Map<string, { input: string; picker: ReturnType<typeof nodeChoiceField<string>>; status: HTMLElement }[]>();
-  private tempoField = element("input", "nd-field");
-  private timeRate: number;
-  private timeRateLabels = new Set<HTMLElement>();
+  private timeRateFields = new Set<HTMLInputElement>();
   private cards = new Map<string, HTMLElement>();
-  private edgePaths: { edge: GraphEdge; path: SVGPathElement; hit: SVGPathElement; insertHit: SVGPathElement }[] = [];
-  private wireDrag?: { ports: Port[]; point: Point; detached: GraphEdge[] };
+  private edgePaths: { edge: GraphEdge; path: SVGPathElement; hit: SVGPathElement; insertHit: SVGPathElement; gradient?: SVGLinearGradientElement }[] = [];
+  private wireDrag?: { ports: Port[]; point: Point; detached: GraphEdge[]; menuAnchor?: Point };
   private dragPaths: SVGPathElement[] = [];
   private cancelDrag?: () => void;
   private movingGraph = false;
@@ -342,7 +339,6 @@ export class NodeEditor {
 
   constructor(private host: HTMLElement, private options: Options) {
     this.graph = options.graph;
-    this.timeRate = this.graph.tempo === undefined ? CYCLES_PER_SECOND : this.graph.tempo / 60;
     this.view = options.view;
     this.viewport.tabIndex = 0;
     this.viewport.setAttribute("aria-label", "Node graph");
@@ -366,18 +362,7 @@ export class NodeEditor {
     const output = button("Open Output", options.openOutput);
     output.prepend(phosphorIcon("paper-plane-tilt"), " ");
     const playback = element("div", "nd-playback-controls");
-    const tempo = element("label", "nd-tempo", "Tempo");
-    this.tempoField.type = "number";
-    this.tempoField.min = "0";
-    this.tempoField.step = "any";
-    this.tempoField.setAttribute("aria-label", "Tempo (BPM)");
-    this.tempoField.addEventListener("change", () => {
-      const value = this.tempoField.valueAsNumber;
-      if (!Number.isFinite(value) || value < 0) this.updateTempoField();
-      else if (value !== (this.graph.tempo ?? CYCLES_PER_SECOND * 60)) this.change({ ...this.graph, tempo: value });
-    });
-    tempo.append(this.tempoField, element("span", "", "BPM"));
-    playback.append(projection, this.makeRunButton(), tempo, this.status);
+    playback.append(projection, this.makeRunButton(), this.status);
     top.append(brand, add, button("Variables", () => this.toggleVariables()), this.undoButton, this.redoButton,
       playback, output);
     const navigation = element("div", "nd-navigation");
@@ -461,19 +446,28 @@ export class NodeEditor {
     this.updateVideoRows(entries);
   }
 
-  private updateTempoField() {
-    const legacy = this.graph.nodes.filter(node => node.kind === "tempo").at(-1);
-    this.tempoField.disabled = Boolean(legacy);
-    this.tempoField.value = String(legacy?.data.value ?? this.graph.tempo ?? CYCLES_PER_SECOND * 60);
-    this.tempoField.dataset.tooltip = legacy ? "Tempo is set by the legacy Tempo node" : "Beats per minute. One beat equals one cycle.";
-  }
+  private makeTimeRateField() {
+    const field = element("input", "nd-field nd-time-rate");
+    field.type = "number";
+    field.min = "0";
+    field.step = "0.1";
+    field.value = String(graphTempoRate(this.graph));
+    field.setAttribute("aria-label", "Global Rate (beats/s)");
+    field.dataset.tooltip = "Global rate in beats per second. Apply with Run.";
+    this.timeRateFields.add(field);
 
-  setTimeRate(rate: number) {
-    if (this.timeRate === rate) return;
-    this.timeRate = rate;
-    if (!this.timeRateLabels.size) return;
-    const label = formatTimeRate(rate);
-    for (const target of this.timeRateLabels) target.textContent = label;
+    let editing = false;
+    field.addEventListener("input", () => {
+      const rate = field.valueAsNumber;
+      if (!Number.isFinite(rate) || rate < 0 || rate === graphTempoRate(this.graph)) return;
+      this.change({ ...this.graph, tempo: undefined, tempoRate: rate }, false, !editing);
+      editing = true;
+    });
+    field.addEventListener("blur", () => {
+      editing = false;
+      field.value = String(graphTempoRate(this.graph));
+    });
+    return field;
   }
 
   refresh() { this.render(); }
@@ -503,10 +497,12 @@ export class NodeEditor {
     return run;
   }
 
-  private change(graph: Graph, layoutOnly = false) {
+  private change(graph: Graph, layoutOnly = false, recordHistory = true) {
     const previous = this.graph;
-    this.past.push(previous);
-    if (this.past.length > 75) this.past.shift();
+    if (recordHistory) {
+      this.past.push(previous);
+      if (this.past.length > 75) this.past.shift();
+    }
     this.future.length = 0;
     this.graph = layoutOnly ? graph : pruneRoutingNodes(graph);
     if (layoutOnly) this.layoutSources.set(graph, this.contentGraph(previous));
@@ -534,7 +530,11 @@ export class NodeEditor {
   }
 
   private get hasPendingChanges() {
-    return !this.applied || this.contentGraph(this.applied) !== this.contentGraph(this.graph);
+    if (!this.applied) return true;
+    const applied = this.contentGraph(this.applied);
+    const draft = this.contentGraph(this.graph);
+    return applied.nodes !== draft.nodes || applied.edges !== draft.edges || applied.variables !== draft.variables ||
+      graphTempoRate(applied) !== graphTempoRate(draft);
   }
 
   private restoreMotionFactors(previous: Graph) {
@@ -555,20 +555,22 @@ export class NodeEditor {
   }
 
   private graphChanged(previous: Graph) {
-    if (previous.nodes === this.graph.nodes && previous.edges === this.graph.edges && previous.tempo !== this.graph.tempo) {
-      this.options.setTempo(this.graph.tempo ?? CYCLES_PER_SECOND * 60);
-      if (this.applied && this.contentGraph(this.applied) === this.contentGraph(previous)) this.applied = this.graph;
-      this.updateTempoField();
-      this.refreshHistory();
-      this.save();
-      return;
-    }
+    const rate = graphTempoRate(this.graph);
+    const tempoOnly = previous.nodes === this.graph.nodes && previous.edges === this.graph.edges &&
+      previous.variables === this.graph.variables && graphTempoRate(previous) !== rate;
     const layoutOnly = this.contentGraph(previous) === this.contentGraph(this.graph);
     if (!layoutOnly) {
       this.status.textContent = this.hasPendingChanges ? "Changes ready to run" : "Running";
       this.status.classList.remove("error");
     }
     this.save();
+    if (tempoOnly) {
+      for (const field of this.timeRateFields) {
+        if (field.valueAsNumber !== rate) field.value = String(rate);
+      }
+      this.refreshHistory();
+      return;
+    }
     if (layoutOnly) {
       const moving = new Set<string>();
       this.graph.nodes.forEach((node, index) => {
@@ -613,8 +615,7 @@ export class NodeEditor {
     this.cards.clear();
     this.sourcePickers.clear();
     this.videoRows.clear();
-    this.timeRateLabels.clear();
-    this.updateTempoField();
+    this.timeRateFields.clear();
     for (const node of this.graph.nodes) this.renderNode(node, existing.get(node.id));
     for (const id of this.selected) {
       if (!this.cards.has(id)) this.selected.delete(id);
@@ -711,18 +712,24 @@ export class NodeEditor {
     }
     card.append(header);
     const body = element("div", "nd-node-body");
+    const video = node.kind === "video";
+    let playbackPicker: HTMLElement | undefined;
     if (def.modes) {
-      const setting = element("div", "nd-node-mode", node.kind === "video" ? "Playback" : "Mode");
       const choices: SelectChoice[] = def.modes.map(item => [
         item.id, item.label, referenceForNode(node.kind, item).summary, undefined,
         node.kind === "constant" ? item.inputs?.[0]?.type : item.output,
       ]);
-      const mode = this.choiceField(node, "mode", choices, activeMode?.id ?? "", node.kind === "video" ? "Video playback" : "Mode", value => {
+      const mode = this.choiceField(node, "mode", choices, activeMode?.id ?? "", video ? "Video playback" : "Mode", value => {
         this.setData(node, "mode", value);
-        this.cards.get(node.id)?.querySelector<HTMLElement>(".nd-node-mode .nd-choice-trigger")?.focus();
-      }, node.kind !== "video");
-      setting.append(mode);
-      body.append(setting);
+        const setting = video ? ".nd-video-controls" : ".nd-node-mode";
+        this.cards.get(node.id)?.querySelector<HTMLElement>(`${setting} .nd-choice-trigger`)?.focus();
+      }, !video);
+      if (video) playbackPicker = mode;
+      else {
+        const setting = element("div", "nd-node-mode", "Mode");
+        setting.append(mode);
+        body.append(setting);
+      }
     }
     if (hasSourcePicker) {
       const picker = nodeChoiceField([], "", def.label, (value: string) => {
@@ -748,21 +755,19 @@ export class NodeEditor {
       body.append(this.choiceField(node, "variable", [["", "Choose variable…"], ...options], String(node.data.variable ?? ""),
         "Variable", value => this.setData(node, "variable", value), true));
     }
+    const outputRows = document.createDocumentFragment();
     const outputs = outputsFor(this.graph, node);
     for (const output of outputs.length || node.kind !== "expression" ? outputs : [{ id: undefined, label: "Value", type: undefined }]) {
       const row = element("div", "nd-port-row nd-port-out");
       if (output.type) row.dataset.type = output.type;
       const label = output.label ?? (output.type && (isRenderable(output.type) || output.type === "color") ? typeLabels[output.type] : "Value");
-      row.append(element("span", "", label));
       if (node.kind === "time" && output.id === "rate") {
-        const readout = element("span", "nd-time-rate", formatTimeRate(this.timeRate));
-        readout.dataset.tooltip = "Beats per second";
-        this.timeRateLabels.add(readout);
-        row.append(readout);
-      }
+        row.append(element("span", "", "Global Rate"), this.makeTimeRateField());
+      } else row.append(element("span", "", label));
       row.append(this.port(node, output.type, { output: output.id }, output.label));
-      body.append(row);
+      outputRows.append(row);
     }
+    if (!video) body.append(outputRows);
     const inputs = inputsFor(this.graph, node);
     let ramp: ReturnType<typeof gradientField> | undefined;
     if (node.kind === "colorRamp") {
@@ -805,7 +810,7 @@ export class NodeEditor {
       row.classList.toggle("nd-connected", connected);
       if (!connected && node.kind !== "variable" && !socket.optional && socket.default === undefined) row.classList.add("nd-required");
       row.append(this.port(node, shownType, { input: socket.id }), element("span", "", socket.label));
-      if (node.kind === "video") {
+      if (video) {
         if (!connected) this.renderVideoRow(node, socket.id, socket.label, row);
       } else if (!connected && socket.type === "color" && (socket.optional || socket.default !== undefined)) {
         const value = node.data[socket.id] ?? socket.default;
@@ -864,9 +869,14 @@ export class NodeEditor {
       if (fontAxis) body.prepend(row);
       else if (ramp && socket.id === "image") body.insertBefore(row, ramp.field);
       else body.append(row);
-      if ((node.kind === "video" || node.kind === "index") && socket.id === listInputId(node.kind, listInputCount(node) - 1)) {
+      if (node.kind === "index" && socket.id === listInputId("index", listInputCount(node) - 1)) {
         body.append(this.renderListControls(node));
       }
+    }
+    if (playbackPicker) {
+      const controls = element("div", "nd-video-controls");
+      controls.append(this.renderListControls(node), playbackPicker);
+      body.append(outputRows, controls);
     }
     if (node.kind === "output") {
       const outputs = this.graph.nodes.filter(item => item.kind === "output");
@@ -891,7 +901,7 @@ export class NodeEditor {
     this.world.append(card);
     this.cards.set(node.id, card);
     if (hasSourcePicker) this.updateMediaCard(card, node, entries);
-    if (node.kind === "video") this.updateVideoRows(getAllEntries(), node.id);
+    if (video) this.updateVideoRows(getAllEntries(), node.id);
   }
 
   private fontAxisField(node: GraphNode, tag: string) {
@@ -960,7 +970,7 @@ export class NodeEditor {
       this.setData(node, input, value);
       this.cards.get(node.id)?.querySelector<HTMLElement>(`[data-video-input="${input}"] .nd-choice-trigger`)?.focus();
     });
-    const status = element("span", "nd-video-duration");
+    const status = element("span", "nd-video-status");
     status.setAttribute("aria-live", "polite");
     const field = element("div", "nd-video-source");
     field.dataset.videoInput = input;
@@ -980,9 +990,8 @@ export class NodeEditor {
       for (const { input, picker, status } of this.videoRows.get(node.id) ?? []) {
         const selected = String(node.data[input] ?? "");
         if (choices) picker.setChoices(choices.some(([id]) => id === selected) ? choices : [...choices, [selected, selected]], selected);
-        const duration = modeFor(node)?.id === "clipEnd" ? videoDuration(selected) : undefined;
-        const label = typeof duration === "number" ? `${duration.toFixed(2)} s`
-          : duration === "loading" ? "Loading duration…" : duration === "unavailable" ? "Video unavailable" : "";
+        const unavailable = modeFor(node)?.id === "clipEnd" && videoDuration(selected) === "unavailable";
+        const label = unavailable ? "Video unavailable" : "";
         status.hidden = !label;
         if (status.textContent !== label) status.textContent = label;
       }
@@ -1158,6 +1167,10 @@ export class NodeEditor {
     return { x: (point.x - this.view.x) / this.view.zoom, y: (point.y - this.view.y) / this.view.zoom };
   }
 
+  private viewportPoint(point: Point): Point {
+    return { x: point.x * this.view.zoom + this.view.x, y: point.y * this.view.zoom + this.view.y };
+  }
+
   private transform(updateWires = true) {
     this.world.querySelector<HTMLElement>(".nd-choice-list:popover-open")?.hidePopover();
     this.showInsertion();
@@ -1167,6 +1180,7 @@ export class NodeEditor {
     this.viewport.style.backgroundSize = `${Math.max(10, 20 * zoom)}px ${Math.max(10, 20 * zoom)}px`;
     this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
     if (updateWires) this.updateWirePositions();
+    if (this.wireDrag?.menuAnchor) this.positionMenu();
   }
 
   private zoom(factor: number, at: Point) {
@@ -1210,10 +1224,37 @@ export class NodeEditor {
     return `M${start.x},${start.y} C${start.x + bend},${start.y} ${end.x - bend},${end.y} ${end.x},${end.y}`;
   }
 
-  private edgeCurve(edge: GraphEdge, viewport: DOMRect) {
+  private edgeGeometry(edge: GraphEdge, viewport: DOMRect) {
     const from = this.portPosition({ node: edge.from, output: edge.output }, viewport);
     const to = this.portPosition({ node: edge.to, input: edge.input }, viewport);
-    return from && to ? this.wireCurve(from, to) : undefined;
+    return from && to ? { from, to, curve: this.wireCurve(from, to) } : undefined;
+  }
+
+  private positionWireGradient(gradient: SVGLinearGradientElement, from: Point, to: Point) {
+    gradient.setAttribute("x1", String(from.x));
+    gradient.setAttribute("y1", String(from.y));
+    gradient.setAttribute("x2", String(to.x));
+    gradient.setAttribute("y2", String(to.y));
+  }
+
+  private makeWireGradient(fromType: ValueType, toType: ValueType, from: Point, to: Point) {
+    const gradient = document.createElementNS(svgNamespace, "linearGradient");
+    gradient.id = `nd-wire-gradient-${++nextWireGradient}`;
+    gradient.setAttribute("gradientUnits", "userSpaceOnUse");
+    this.positionWireGradient(gradient, from, to);
+    const sourceColor = portColor(fromType);
+    const targetColor = portColor(toType);
+    // Sample CIELCh (HCL) for the stops, since SVG interpolates between stops in RGB.
+    const segments = CSS.supports("stop-color", "color-mix(in lch, red, blue)") ? 8 : 1;
+    for (let i = 0; i <= segments; i++) {
+      const stop = document.createElementNS(svgNamespace, "stop");
+      const offset = i / segments;
+      stop.setAttribute("offset", String(offset));
+      stop.style.stopColor = i === 0 ? sourceColor : i === segments ? targetColor
+        : `color-mix(in lch, ${sourceColor} ${(1 - offset) * 100}%, ${targetColor})`;
+      gradient.append(stop);
+    }
+    return gradient;
   }
 
   private updateWirePositions(moving?: ReadonlySet<string>) {
@@ -1223,13 +1264,14 @@ export class NodeEditor {
     for (const wire of this.edgePaths) {
       const { edge } = wire;
       if (moving && !moving.has(edge.from) && !moving.has(edge.to)) continue;
-      const curve = this.edgeCurve(edge, viewport);
-      if (curve && curve !== wire.path.getAttribute("d")) updates.push({ wire, curve });
+      const geometry = this.edgeGeometry(edge, viewport);
+      if (geometry && geometry.curve !== wire.path.getAttribute("d")) updates.push({ wire, ...geometry });
     }
-    for (const { wire, curve } of updates) {
+    for (const { wire, curve, from, to } of updates) {
       wire.path.setAttribute("d", curve);
       wire.hit.setAttribute("d", curve);
       wire.insertHit.setAttribute("d", curve);
+      if (wire.gradient) this.positionWireGradient(wire.gradient, from, to);
     }
     this.updateDragPaths(viewport);
   }
@@ -1238,19 +1280,28 @@ export class NodeEditor {
     const viewport = this.viewport.getBoundingClientRect();
     const nodes = new Map(this.graph.nodes.map(node => [node.id, node]));
     const paths = document.createDocumentFragment();
+    const gradients = document.createElementNS(svgNamespace, "defs");
     this.edgePaths = [];
     for (const edge of this.graph.edges) {
-      const curve = this.edgeCurve(edge, viewport);
+      const geometry = this.edgeGeometry(edge, viewport);
       const node = nodes.get(edge.from);
-      if (!curve || !node) continue;
+      if (!geometry || !node) continue;
       const path = document.createElementNS(svgNamespace, "path");
-      path.setAttribute("d", curve);
+      path.setAttribute("d", geometry.curve);
       const type = outputType(this.graph, node, edge.output);
       if (type) path.dataset.type = type;
       const hit = path.cloneNode() as SVGPathElement;
       hit.classList.add("nd-wire-hit");
       const insertHit = path.cloneNode() as SVGPathElement;
       insertHit.classList.add("nd-wire-insert-hit");
+      const target = nodes.get(edge.to);
+      const targetType = target && inputType(this.graph, target, edge.input);
+      const gradient = type && targetType && type !== targetType
+        ? this.makeWireGradient(type, targetType, geometry.from, geometry.to) : undefined;
+      if (gradient) {
+        gradients.append(gradient);
+        path.style.stroke = `url(#${gradient.id})`;
+      }
       path.classList.toggle("nd-wire-selected", edge === this.selectedEdge);
       path.classList.toggle("nd-wire-inserting", edge === this.insertion?.edge);
       hit.addEventListener("pointerdown", event => {
@@ -1288,8 +1339,9 @@ export class NodeEditor {
         this.showMenu(pos, [button("Disconnect", () => { this.closeMenu(); this.removeEdge(edge); })]);
       });
       paths.append(path, hit, insertHit);
-      this.edgePaths.push({ edge, path, hit, insertHit });
+      this.edgePaths.push({ edge, path, hit, insertHit, gradient });
     }
+    if (gradients.childElementCount) paths.prepend(gradients);
     this.wires.replaceChildren(paths);
     this.syncWireDrag();
   }
@@ -1313,12 +1365,18 @@ export class NodeEditor {
 
   private updateDragPaths(viewport?: DOMRect) {
     if (!this.wireDrag) return;
-    const { ports, point } = this.wireDrag;
+    const { ports, point, menuAnchor } = this.wireDrag;
+    const end = menuAnchor ? this.viewportPoint(menuAnchor) : point;
     const curves = ports.map(port => {
       const fixed = this.portPosition(port, viewport);
-      return fixed ? (port.input ? this.wireCurve(point, fixed) : this.wireCurve(fixed, point)) : "";
+      return fixed ? (port.input ? this.wireCurve(end, fixed) : this.wireCurve(fixed, end)) : "";
     });
     this.dragPaths.forEach((path, i) => path.setAttribute("d", curves[i]));
+  }
+
+  private clearWireDrag() {
+    this.wireDrag = undefined;
+    this.syncWireDrag();
   }
 
   private selectNodes(ids: Iterable<string> = []) {
@@ -1653,16 +1711,22 @@ export class NodeEditor {
       this.wireDrag!.point = snap ?? this.local(move.clientX, move.clientY);
       this.updateDragPaths();
     }, end => {
-      this.wireDrag = undefined;
       this.highlight(() => false);
-      this.syncWireDrag();
-      if (!end || this.graph !== graph || Math.hypot(end.clientX - event.clientX, end.clientY - event.clientY) < 5) return;
+      if (!end || this.graph !== graph || Math.hypot(end.clientX - event.clientX, end.clientY - event.clientY) < 5) {
+        this.clearWireDrag();
+        return;
+      }
       const under = document.elementFromPoint(end.clientX, end.clientY);
       const target = this.dropPortAt(end.clientX, end.clientY, under, acceptsDrop);
       if (!target && under && this.viewport.contains(under) && !under.closest(".nd-node,.nd-wire-hit,.nd-navigation,.nd-menu,.nd-variables")) {
-        this.openMenu(this.local(end.clientX, end.clientY), port, detached.length ? { fixedPorts, detached } : undefined);
+        const point = this.local(end.clientX, end.clientY);
+        this.openMenu(point, port, detached.length ? { fixedPorts, detached } : undefined);
+        this.wireDrag!.menuAnchor = this.worldPoint(point);
+        this.updateDragPaths();
+        this.positionMenu();
         return;
       }
+      this.clearWireDrag();
       const next = (target && resolveDrop(target)) ?? base;
       if (next !== graph) this.change(next);
     });
@@ -1877,7 +1941,8 @@ export class NodeEditor {
   }
 
   private positionMenu() {
-    const point = this.menuAnchor;
+    const cable = this.wireDrag?.menuAnchor;
+    const point = cable ? this.viewportPoint(cable) : this.menuAnchor;
     if (!point) return;
     const catalog = this.menu.classList.contains("nd-catalog-menu");
     const fixed = this.menu.hasAttribute("popover");
@@ -1885,9 +1950,21 @@ export class NodeEditor {
     const panelHeight = Math.min(420, Math.max(0, this.viewport.clientHeight - 8));
     this.menu.style.setProperty("--nd-menu-height", `${panelHeight}px`);
     this.menu.style.setProperty("--nd-menu-width", `${Math.min(536, Math.max(0, this.viewport.clientWidth - 8))}px`);
+    const width = this.menu.offsetWidth;
     const height = catalog ? panelHeight : this.menu.offsetHeight;
-    const x = Math.max(4, Math.min(point.x, this.viewport.clientWidth - this.menu.offsetWidth - 4));
-    const y = Math.max(4, Math.min(point.y, this.viewport.clientHeight - height - 4));
+    const maxX = this.viewport.clientWidth - width - 4;
+    const maxY = this.viewport.clientHeight - height - 4;
+    let { x, y } = point;
+    if (cable) {
+      // Prefer placing the menu beside the loose end, with a vertical fallback for narrow views.
+      const gap = 12;
+      if (x + gap <= maxX) x += gap;
+      else if (x - width - gap >= 4) x -= width + gap;
+      else if (y + gap <= maxY) y += gap;
+      else y -= height + gap;
+    }
+    x = Math.max(4, Math.min(x, maxX));
+    y = Math.max(4, Math.min(y, maxY));
     this.menu.style.left = `${x + (fixed ? bounds.left : 0)}px`;
     this.menu.style.top = `${y + (fixed ? bounds.top : 0)}px`;
   }
@@ -1902,6 +1979,7 @@ export class NodeEditor {
       this.menu.removeAttribute("popover");
     }
     this.menu.hidden = true;
+    if (this.wireDrag?.menuAnchor) this.clearWireDrag();
     if (dismiss) action?.();
   }
 
