@@ -179,6 +179,7 @@ button.nd-node-title:hover { text-decoration: underline; }
 .nd-node-mode { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; color: var(--fg-mid); font-size: 11px; }
 .nd-port-row { min-height: 19px; display: flex; align-items: center; gap: 6px; position: relative; font-size: 11px; padding-left: 4px; }
 .nd-port-out { justify-content: flex-end; padding: 0 5px 0 0; color: var(--fg-mid); }
+.nd-time-rate { color: var(--nd-color-number); font-variant-numeric: tabular-nums; }
 .nd-port-row > .nd-field, .nd-port-row > .nd-choice-field { min-width: 0; width: 60%; margin-left: auto; color: var(--nd-port-color, var(--fg)); }
 .nd-video-source { min-width: 0; width: 62%; margin-left: auto; }
 .nd-video-duration { color: var(--fg-mid); font-size: 10px; }

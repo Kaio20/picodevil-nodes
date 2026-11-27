@@ -279,7 +279,11 @@ export const catalog = {
       { id: "tri", label: "Triangle", reference: ["tri"] },
     ],
   },
-  time: { label: "Time", category: "Signals", inputs: [], output: "number", reference: ["time"], help: "Read the global transport in cycles. Multiply to set the speed of a motion branch." },
+  time: {
+    label: "Time", category: "Signals", inputs: [], output: "number", outputLabel: "Beats", reference: ["time"],
+    extraOutputs: [{ id: "rate", label: "Rate", type: "number" }],
+    help: "Beats advances by 1 per beat. Rate gives beats per second: 1 at 60 BPM.",
+  },
   rand: { label: "Random", reference: ["rand"], category: "Signals", inputs: [], output: "number" },
   fft: { label: "Audio FFT", reference: ["fft"], category: "Signals", inputs: [], output: "number" },
   numberPattern: { label: "Number Pattern", help: "Sequence numbers with mini-notation. For example, `0 1` plays both values in one cycle, and `<0 1>` alternates them across cycles.", category: "Signals", inputs: [text("pattern", "Pattern", "0 1")], output: "number" },
@@ -437,7 +441,7 @@ export function makeNode(kind: NodeKind, x: number, y: number, data: Record<stri
 export function starterGraph(): Graph {
   const card = makeNode("testCard", 64, 96);
   const output = makeNode("output", 330, 96);
-  return { nodes: [card, output], edges: [{ from: card.id, to: output.id, input: "image" }], variables: [] };
+  return { nodes: [card, output], edges: [{ from: card.id, to: output.id, input: "image" }], variables: [], tempo: 60 };
 }
 
 export function definition(kind: NodeKind): NodeDefinition {

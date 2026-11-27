@@ -230,7 +230,10 @@ function frame() {
   const { cps, cycle, t } = cpsController.tick(rafAbsNow);
   setRuntimeCps(cps);
   nodeTransport.advance(cycle, cps, rafAbsNow);
-  if (mode === "nodes") liveMotions.advance(cycle);
+  if (mode === "nodes") {
+    liveMotions.advance(cycle);
+    nodeEditor.setTimeRate(cps);
+  }
   fftUpdateFrame();
 
   frameRenderer.render(evalController.screens, evalController.namedScreens, t, cps, cycle, rafAbsNow);
@@ -252,7 +255,7 @@ function frame() {
 
   flushWarnings();
   if (!nodeEditor.isMovingGraph) {
-    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, canvas.width / canvas.height, nodeEditor.previewNode);
+    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, cps, canvas.width / canvas.height, nodeEditor.previewNode);
   }
 }
 document.addEventListener("visibilitychange", scheduleFrame);
@@ -362,6 +365,7 @@ const nodeEditor = new NodeEditor(nodeHost, {
     const frame = cpsController.tick(now);
     nodeTransport.advance(frame.cycle, tempo / 60, now);
     cpsController.setCpm(tempo, now);
+    nodeEditor.setTimeRate(tempo / 60);
     if (session.live) session.live = { ...session.live, tempo };
   },
   setMotionFactor: (id, input, value) => {

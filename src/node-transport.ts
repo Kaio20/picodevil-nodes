@@ -9,11 +9,13 @@ interface MotionSegment { cycle: number; source: number; position: number; facto
 
 /** The transport owns updates. Pattern queries can sample past or future cycles without advancing it. */
 export class NodeTransport {
+  readonly rateSignal = signal(() => this.cps);
   private cycle = 0;
-  private cps = CYCLES_PER_SECOND;
   private seconds = 0;
   private wall?: number;
   private playlists = new Map<string, { key: string; start: number }>();
+
+  constructor(private cps = CYCLES_PER_SECOND) {}
 
   advance(cycle: number, cps: number, wall: number) {
     if (this.wall !== undefined && this.cps > 0) this.seconds += Math.max(0, wall - this.wall) / 1000;

@@ -89,6 +89,45 @@ try {
   await currentReference.waitFor();
   assert.equal(await currentReference.textContent(), "Test Card");
   assert.equal(await page.locator("#sidebar-panel.open").count(), 1);
+  const referenceNav = referenceTab.getByRole("navigation", { name: "Reference categories" });
+  const categoryHeaders = referenceNav.locator(".ref-nav-jump");
+  assert.deepEqual(await categoryHeaders.allTextContents(), ["Sources", "Patterns", "Playback", "Image", "Layout", "Text", "Signals", "Media", "Output", "Nodes"]);
+  assert.equal(await referenceNav.locator('button[aria-expanded="true"]').count(), 10);
+  assert.equal(await referenceNav.getByRole("button", { name: "Go to Sources", exact: true }).evaluate(header => getComputedStyle(header).color), "rgb(91, 168, 255)");
+  const patternsToggle = referenceNav.getByRole("button", { name: "Toggle Patterns", exact: true });
+  await patternsToggle.press("Enter");
+  assert.equal(await patternsToggle.getAttribute("aria-expanded"), "false");
+  const patternsHeader = referenceNav.getByRole("button", { name: "Go to Patterns", exact: true });
+  await patternsHeader.click();
+  assert.equal(await patternsToggle.getAttribute("aria-expanded"), "true");
+  await page.waitForFunction(() => {
+    const heading = document.querySelector("#ref-cat-Patterns")!;
+    const top = heading.getBoundingClientRect().top - heading.closest(".ref-detail")!.getBoundingClientRect().top;
+    return top >= 0 && top <= 16;
+  });
+  await referenceNav.evaluate(nav => { nav.scrollTop = 0; });
+  const referenceDetail = referenceTab.getByRole("region", { name: "Reference documentation" });
+  await referenceDetail.evaluate(detail => {
+    const heading = detail.querySelector("#ref-cat-Layout")!;
+    detail.scrollTop += heading.getBoundingClientRect().top - detail.getBoundingClientRect().top;
+  });
+  await page.waitForFunction(() => {
+    const nav = document.querySelector<HTMLElement>("#tab-reference .ref-nav")!;
+    const { top, bottom } = nav.getBoundingClientRect();
+    const headings = nav.querySelectorAll(".ref-nav-head");
+    return nav.scrollTop > 0 && Math.abs(headings[0].getBoundingClientRect().top - top) <= 1 &&
+      Math.abs(headings[headings.length - 1].getBoundingClientRect().bottom - bottom) <= 1;
+  });
+  const mediaToggle = referenceNav.getByRole("button", { name: "Toggle Media", exact: true });
+  await mediaToggle.click();
+  assert.equal(await mediaToggle.getAttribute("aria-expanded"), "false");
+  const referenceSearch = referenceTab.getByRole("searchbox", { name: "Search reference" });
+  await referenceSearch.fill("loadCamera");
+  assert.equal(await mediaToggle.getAttribute("aria-expanded"), "true");
+  await referenceNav.getByRole("link", { name: "loadCamera()", exact: true }).waitFor();
+  await referenceSearch.clear();
+  assert.equal(await mediaToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(await patternsToggle.getAttribute("aria-expanded"), "true");
   await page.locator('button[data-tab="videos"]').click();
   const projection = page.getByRole("button", { name: "Projection", exact: true });
   const projectionPanel = page.locator("#nd-projection");
@@ -626,10 +665,40 @@ try {
   await undo.click();
   await undo.click();
   await undo.click();
-  const tempo = page.getByRole("spinbutton", { name: "Tempo (CPM)" });
-  await tempo.fill("60");
-  await tempo.press("Tab");
-  await page.waitForFunction(() => (window as any).pdLiveFrame?.cps === 1);
+  await page.getByRole("button", { name: "Add Node" }).click();
+  await cableSearch.fill("Time");
+  await nodeResults.getByRole("button", { name: "Time", exact: true }).click();
+  const time = page.locator('[data-kind="time"]');
+  await time.getByRole("button", { name: "Preview Time", exact: true }).click();
+  const tempo = page.getByRole("spinbutton", { name: "Tempo (BPM)" });
+  const setTempo = async (bpm: string) => {
+    await tempo.fill(bpm);
+    await tempo.press("Tab");
+    await page.waitForFunction(rate => (window as any).pdLiveFrame?.cps === rate, Number(bpm) / 60);
+  };
+  await setTempo("90");
+  assert.equal(await time.locator(".nd-time-rate").textContent(), "1.5");
+  await setTempo("60");
+  assert.equal(await time.locator(".nd-time-rate").textContent(), "1");
+  const timeBeforeStall = await page.evaluate(async () => {
+    const win = window as any;
+    const before = win.pdLiveFrame;
+    win.pdPauseRaf();
+    await new Promise(resolve => setTimeout(resolve, 450));
+    win.pdResumeRaf();
+    return before;
+  });
+  await page.waitForFunction(wall => (window as any).pdLiveFrame.wall > wall, timeBeforeStall.wall);
+  const timeAfterStall = await page.evaluate(() => (window as any).pdLiveFrame);
+  const seconds = (timeAfterStall.wall - timeBeforeStall.wall) / 1000;
+  assert(seconds >= 0.4);
+  assert(Math.abs(timeAfterStall.cycle - timeBeforeStall.cycle - seconds) < 0.001);
+  await page.waitForFunction(() => {
+    const readout = Number(document.querySelector('[data-kind="time"] .nd-preview-status')?.textContent);
+    return Math.abs(readout - (window as any).pdLiveFrame.cycle) < 0.15;
+  });
+  await undo.click();
+  await undo.click();
   await undo.click();
   await page.locator('button[data-tab="audio"]').click();
   await drag(page, page.locator(".nd-audio-signals").getByText("Bass", { exact: true }), { x: graph.x + 240, y: graph.y + 508 });

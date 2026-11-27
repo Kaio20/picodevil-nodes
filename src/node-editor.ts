@@ -44,6 +44,7 @@ const svgNamespace = "http://www.w3.org/2000/svg";
 const portDropPadding = 10;
 const alignedNodeGap = 24;
 const typeLabels: Record<ValueType, string> = { visual: "Image", textLayer: "Text", number: "Float", text: "String", boolean: "Boolean", color: "Color" };
+const formatTimeRate = (rate: number) => String(Number(rate.toFixed(3)));
 const categoryIcons: Record<string, string> = {
   Sources: "film-strip", Signals: "waveform", Expressions: "function", Playback: "play",
   Layout: "grid-four", Image: "image", Text: "text-t", Variables: "brackets-curly",
@@ -326,6 +327,8 @@ export class NodeEditor {
   private sourcePickers = new Map<string, ReturnType<typeof nodeChoiceField<string>>>();
   private videoRows = new Map<string, { input: string; picker: ReturnType<typeof nodeChoiceField<string>>; status: HTMLElement }[]>();
   private tempoField = element("input", "nd-field");
+  private timeRate: number;
+  private timeRateLabels = new Set<HTMLElement>();
   private cards = new Map<string, HTMLElement>();
   private edgePaths: { edge: GraphEdge; path: SVGPathElement; hit: SVGPathElement; insertHit: SVGPathElement }[] = [];
   private wireDrag?: { ports: Port[]; point: Point; detached: GraphEdge[] };
@@ -339,6 +342,7 @@ export class NodeEditor {
 
   constructor(private host: HTMLElement, private options: Options) {
     this.graph = options.graph;
+    this.timeRate = this.graph.tempo === undefined ? CYCLES_PER_SECOND : this.graph.tempo / 60;
     this.view = options.view;
     this.viewport.tabIndex = 0;
     this.viewport.setAttribute("aria-label", "Node graph");
@@ -366,13 +370,13 @@ export class NodeEditor {
     this.tempoField.type = "number";
     this.tempoField.min = "0";
     this.tempoField.step = "any";
-    this.tempoField.setAttribute("aria-label", "Tempo (CPM)");
+    this.tempoField.setAttribute("aria-label", "Tempo (BPM)");
     this.tempoField.addEventListener("change", () => {
       const value = this.tempoField.valueAsNumber;
-      if (Number.isFinite(value) && value >= 0) this.change({ ...this.graph, tempo: value });
-      else this.updateTempoField();
+      if (!Number.isFinite(value) || value < 0) this.updateTempoField();
+      else if (value !== (this.graph.tempo ?? CYCLES_PER_SECOND * 60)) this.change({ ...this.graph, tempo: value });
     });
-    tempo.append(this.tempoField, element("span", "", "CPM"));
+    tempo.append(this.tempoField, element("span", "", "BPM"));
     playback.append(projection, this.makeRunButton(), tempo, this.status);
     top.append(brand, add, button("Variables", () => this.toggleVariables()), this.undoButton, this.redoButton,
       playback, output);
@@ -461,7 +465,15 @@ export class NodeEditor {
     const legacy = this.graph.nodes.filter(node => node.kind === "tempo").at(-1);
     this.tempoField.disabled = Boolean(legacy);
     this.tempoField.value = String(legacy?.data.value ?? this.graph.tempo ?? CYCLES_PER_SECOND * 60);
-    this.tempoField.dataset.tooltip = legacy ? "Tempo is set by the legacy Tempo node" : "Cycles per minute";
+    this.tempoField.dataset.tooltip = legacy ? "Tempo is set by the legacy Tempo node" : "Beats per minute. One beat equals one cycle.";
+  }
+
+  setTimeRate(rate: number) {
+    if (this.timeRate === rate) return;
+    this.timeRate = rate;
+    if (!this.timeRateLabels.size) return;
+    const label = formatTimeRate(rate);
+    for (const target of this.timeRateLabels) target.textContent = label;
   }
 
   refresh() { this.render(); }
@@ -601,6 +613,7 @@ export class NodeEditor {
     this.cards.clear();
     this.sourcePickers.clear();
     this.videoRows.clear();
+    this.timeRateLabels.clear();
     this.updateTempoField();
     for (const node of this.graph.nodes) this.renderNode(node, existing.get(node.id));
     for (const id of this.selected) {
@@ -740,7 +753,14 @@ export class NodeEditor {
       const row = element("div", "nd-port-row nd-port-out");
       if (output.type) row.dataset.type = output.type;
       const label = output.label ?? (output.type && (isRenderable(output.type) || output.type === "color") ? typeLabels[output.type] : "Value");
-      row.append(element("span", "", label), this.port(node, output.type, { output: output.id }, output.label));
+      row.append(element("span", "", label));
+      if (node.kind === "time" && output.id === "rate") {
+        const readout = element("span", "nd-time-rate", formatTimeRate(this.timeRate));
+        readout.dataset.tooltip = "Beats per second";
+        this.timeRateLabels.add(readout);
+        row.append(readout);
+      }
+      row.append(this.port(node, output.type, { output: output.id }, output.label));
       body.append(row);
     }
     const inputs = inputsFor(this.graph, node);

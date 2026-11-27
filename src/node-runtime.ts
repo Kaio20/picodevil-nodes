@@ -10,7 +10,6 @@ import { isTexture, resolveMedia, resolveMediaId } from "./media-registry";
 import { resolveUrl } from "./server-config";
 import { catalogTexture } from "./texture-library";
 import { CYCLES_PER_SECOND, getRuntimeCps, setRuntimeCps } from "./config";
-import { CpsController } from "./cps-controller";
 import { createMetrics } from "./frame-metrics";
 import { FrameRenderer } from "./renderer";
 import { WebGLRenderer } from "./webgl-renderer";
@@ -168,7 +167,10 @@ interface RuntimeContext {
   nodes: Map<string, GraphNode>;
 }
 
-function buildValues(graph: Graph, preview: boolean, transport = new NodeTransport(), motions = new NodeMotions()) {
+function buildValues(
+  graph: Graph, preview: boolean,
+  transport = new NodeTransport(graph.tempo === undefined ? CYCLES_PER_SECOND : graph.tempo / 60), motions = new NodeMotions(),
+) {
   const values = new Map<string, Value>();
   const visiting = new Set<string>();
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
@@ -235,7 +237,7 @@ function buildNode(
   const mode = modeFor(node)?.id;
   const wrapTime = (value: Value) => context.motions.isTime(value) ? value.withValue(wrapCycle) : value;
   switch (node.kind) {
-    case "time": return context.motions.time;
+    case "time": return output === "rate" ? context.transport.rateSignal : context.motions.time;
     case "video": return nodeVideoPattern(node.id, Array.from({ length: listInputCount(node) }, (_, i) =>
       input[listInputId("video", i)] as string | Pattern ?? ""), mode ?? "clipEnd", context.transport);
     case "media":
@@ -480,7 +482,7 @@ function buildNode(
 
 function previewKey(target: PreviewTarget) { return JSON.stringify([target.id, Boolean(target.showRamp)]); }
 
-function registerGraph(draft: Graph, targets?: readonly PreviewTarget[], transport = new NodeTransport(), motions = new NodeMotions()) {
+function registerGraph(draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport, motions = new NodeMotions()) {
   const graph = signalGraph(draft);
   const previews = new Map<string, PreviewValue>();
   const read = buildValues(graph, targets !== undefined, transport, motions);
@@ -549,7 +551,6 @@ export class NodePreviews {
   private renderer?: WebGLRenderer;
   private frameRenderer?: FrameRenderer;
   private pool?: ReturnType<typeof createVideoPoolManager>;
-  private clock?: CpsController;
   private transport = new NodeTransport();
   private graph?: Graph;
   private result?: ReturnType<typeof compile>;
@@ -560,7 +561,7 @@ export class NodePreviews {
   private idleSince = 0;
   private unavailable = false;
 
-  draw(graph: Graph, visibleTargets: () => PreviewTarget[], now: number, cycle: number, ratio: number, priority?: string) {
+  draw(graph: Graph, visibleTargets: () => PreviewTarget[], now: number, cycle: number, cps: number, ratio: number, priority?: string) {
     if (now < this.nextFrame) return;
     this.nextFrame = now + 1000 / 15;
     const visible = visibleTargets();
@@ -571,7 +572,7 @@ export class NodePreviews {
     if (!visible.length) {
       this.idleSince ||= now;
       if (this.renderer && now - this.idleSince > 5000) this.dispose();
-      this.clock = undefined;
+      this.result = undefined;
       return;
     }
     this.idleSince = 0;
@@ -582,39 +583,33 @@ export class NodePreviews {
     const batch = preferred.concat(rotating.slice(0, budget));
     this.nextBatch = start + (targets.length > budget ? budget : 1);
     const signature = batch.map(previewKey).join(",");
-    if (!this.clock) {
-      this.clock = new CpsController(CYCLES_PER_SECOND, now);
-      this.clock.restore({ ...this.clock.snapshot(), startMs: now - cycle / CYCLES_PER_SECOND * 1000, accumulatedCycle: cycle });
+    if (!this.result || cycle < this.transport.position) {
       this.transport.reset(now);
       this.result = undefined;
     }
+    this.transport.advance(cycle, cps, now);
     if (!this.result || this.graph !== graph || this.signature !== signature) {
-      const phase = this.clock.tick(now).cycle;
-      const result = compile(graph, batch, this.transport, new NodeMotions(this.result?.motions, phase));
-      if (this.graph !== graph || !this.result) this.clock.setCpm(result.tempo, now);
       this.graph = graph;
       this.signature = signature;
-      this.result = result;
+      this.result = compile(graph, batch, this.transport, new NodeMotions(this.result?.motions, cycle));
     }
     const result = this.result;
-    const time = this.clock.tick(now);
-    this.transport.advance(time.cycle, time.cps, now);
-    result.motions.advance(time.cycle);
+    result.motions.advance(cycle);
     const registry = snapshotRegistry();
-    const cps = getRuntimeCps();
+    const previousCps = getRuntimeCps();
     restoreRegistry(result.registry);
-    setRuntimeCps(time.cps);
+    setRuntimeCps(cps);
     try {
       const hasImages = result.screens.length > 0 && !this.unavailable;
       if (hasImages) {
         this.prepareRenderer(ratio);
-        if (!this.renderer?.isContextLost()) this.frameRenderer?.render(result.screens, result.namedScreens, time.t, time.cps, time.cycle, now);
+        if (!this.renderer?.isContextLost()) this.frameRenderer?.render(result.screens, result.namedScreens, cycle, cps, cycle, now);
       }
-      for (const target of batch) this.drawTarget(target, result.previews.get(previewKey(target)), time.t);
+      for (const target of batch) this.drawTarget(target, result.previews.get(previewKey(target)), cycle);
     } catch (error) {
       for (const target of batch) target.status.textContent = error instanceof Error ? error.message : String(error);
     } finally {
-      setRuntimeCps(cps);
+      setRuntimeCps(previousCps);
       restoreRegistry(registry);
     }
   }

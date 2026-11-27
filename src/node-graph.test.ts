@@ -10,10 +10,39 @@ import { createMetrics } from "./frame-metrics";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { readPixel, withRenderer } from "./webgl-test-helpers";
 import { NodeMotions, NodeTransport } from "./node-transport";
+import { CpsController } from "./cps-controller";
 import { nodeVideoPattern } from "./node-video";
 import { initRegistry as initMediaRegistry } from "./media-registry";
 
 describe("NodesDevil graph", () => {
+  it("keeps Time's rate independent of frame intervals and follows live tempo changes", () => {
+    initRegistry();
+    const time = makeNode("time", 0, 0);
+    const color = makeNode("color", 0, 0);
+    const rotate = makeNode("rotate", 0, 0);
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = { nodes: [time, color, rotate, output], edges: [
+      { from: time.id, output: "rate", to: rotate.id, input: "value" },
+      { from: color.id, to: rotate.id, input: "image" },
+      { from: rotate.id, to: output.id, input: "image" },
+    ], variables: [], tempo: 60 };
+    const transport = new NodeTransport();
+    const { screens } = compileLiveGraph(keepCompatibleEdges(graph), transport);
+    const clock = new CpsController(1, 1000);
+    const sample = (ms: number) => {
+      const { cycle, cps } = clock.tick(ms);
+      transport.advance(cycle, cps, ms);
+      return { cycle, rate: screens[0].queryArc(cycle, cycle)[0].value.rotateZ };
+    };
+    expect(sample(1020)).toEqual({ cycle: 0.02, rate: 1 });
+    expect(sample(2500)).toEqual({ cycle: 1.5, rate: 1 });
+    clock.setCpm(120, 2500);
+    expect(sample(2500)).toEqual({ cycle: 1.5, rate: 2 });
+    expect(sample(3000)).toEqual({ cycle: 2.5, rate: 2 });
+    clock.setCpm(0, 3000);
+    expect(sample(5000)).toEqual({ cycle: 2.5, rate: 0 });
+  });
+
   it("keeps two Time branches independent through live factor edits and wraps a full turn", () => {
     initRegistry();
     const time = makeNode("time", 0, 0);
