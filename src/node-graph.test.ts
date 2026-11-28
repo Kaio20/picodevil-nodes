@@ -15,6 +15,32 @@ import { nodeVideoPattern } from "./node-video";
 import { initRegistry as initMediaRegistry } from "./media-registry";
 
 describe("NodesDevil graph", () => {
+  it("skips isolated Outputs when another Output receives an image through a junction", () => {
+    initRegistry();
+    const graph = starterGraph();
+    const [source, output] = graph.nodes;
+    const isolated = makeNode("output", 0, 0);
+    const junction = makeNode("junction", 0, 0, { type: "visual" });
+    const routed: Graph = {
+      ...graph, nodes: [isolated, source, junction, output],
+      edges: [{ from: source.id, to: junction.id, input: cableInput }, { from: junction.id, to: output.id, input: "image" }],
+    };
+    expect(compileLiveGraph(routed).screens).toHaveLength(1);
+
+    const loose = makeNode("cableEnd", 0, 0, { type: "visual", side: "source" });
+    const attached: Graph = { ...routed, nodes: [...routed.nodes, loose],
+      edges: [...routed.edges, { from: loose.id, to: isolated.id, input: "image" }] };
+    expect(() => compileLiveGraph(attached)).toThrow("Image needs a connection.");
+  });
+
+  it("requires an image when none of the Outputs are connected", () => {
+    initRegistry();
+    const graph = starterGraph();
+    const isolated = makeNode("output", 0, 0);
+    expect(() => compileLiveGraph({ ...graph, edges: [] })).toThrow("Image needs a connection.");
+    expect(() => compileLiveGraph({ ...graph, nodes: [...graph.nodes, isolated], edges: [] })).toThrow("Image needs a connection.");
+  });
+
   it("advances Time at its own rate across frame gaps while video uses elapsed playback time", () => {
     initRegistry();
     const time = makeNode("time", 0, 0);
@@ -27,6 +53,8 @@ describe("NodesDevil graph", () => {
       { from: rotate.id, to: output.id, input: "image" },
     ], variables: [], tempoRate: 1 };
     expect(graphTempoRate({ ...graph, tempoRate: undefined })).toBe(0.1);
+    expect(new NodeTime().currentRate).toBe(0.1);
+    expect(outputsFor({ ...graph, edges: [] }, time).map(port => port.label)).toEqual(["Elapsed (s)"]);
     const storedRate = 0.0017;
     const stored = compileLiveGraph({ ...graph, tempoRate: storedRate });
     expect(stored.screens[0].queryArc(0, 0)[0].value.rotateZ).toBe(storedRate);
@@ -51,10 +79,10 @@ describe("NodesDevil graph", () => {
       };
       expect(sample(1000)).toEqual({ beats: 0, rate: 1, seconds: 0 });
       expect(sample(2500)).toEqual({ beats: 1.5, rate: 1, seconds: 1.5 });
-      nodeTime.setRate(2, 2500);
+      nodeTime.configure(2, 60, 2500);
       expect(sample(2500)).toEqual({ beats: 1.5, rate: 2, seconds: 1.5 });
       expect(sample(3000)).toEqual({ beats: 2.5, rate: 2, seconds: 2 });
-      nodeTime.setRate(0, 3000);
+      nodeTime.configure(0, 60, 3000);
       expect(sample(5000)).toEqual({ beats: 2.5, rate: 0, seconds: 4 });
     } finally { initMediaRegistry([]); }
   });
@@ -80,7 +108,7 @@ describe("NodesDevil graph", () => {
         { from: branch.id, to: outputB.id, input: "image" },
       ],
     };
-    const { screens, motions, tempo } = compileLiveGraph(graph, new NodeTransport(), new NodeMotions());
+    const { screens, motions, tempo } = compileLiveGraph(graph, new NodeTransport());
     const angle = (index: number, cycle: number) => screens[index].queryArc(cycle, cycle)[0].value.rotateZ;
     expect(tempo).toBe(30);
     expect(angle(0, 0.25)).toBeCloseTo(0.25);
@@ -89,7 +117,78 @@ describe("NodesDevil graph", () => {
     expect(angle(1, 0.25)).toBeCloseTo(0.5);
     expect(angle(1, 0.3)).toBeCloseTo(0.7);
     expect(angle(0, 0.3)).toBeCloseTo(0.3);
-    expect(angle(0, 361 / 360)).toBeCloseTo(1 / 360);
+    expect(angle(0, 61 / 60)).toBeCloseTo(1 / 60);
+  });
+
+  it("starts Time nodes independently and applies rate and cadence changes without resetting them", () => {
+    const time = new NodeTime(1);
+    const first = time.elapsedSignal("first");
+    const second = time.elapsedSignal("second");
+    const read = (ms: number) => {
+      const cycle = ms / 2000;
+      time.advance(cycle, 0.5, ms);
+      return [first, second].map(pattern => pattern.queryArc(cycle, cycle)[0].value);
+    };
+    time.trackNodes(new Set(["first"]), 0);
+    time.trackNodes(new Set(["first", "second"]), 2000);
+    expect(read(2000)).toEqual([2, 0]);
+    expect(read(3000)).toEqual([3, 1]);
+    expect(read(3008)).toEqual([3, 1]);
+    time.configure(2, 60, 10008);
+    expect(read(10008)).toEqual([10, 8]);
+    expect(read(11000)).toEqual([12, 10]);
+    time.configure(2, 50, 11000);
+    expect(read(11019)).toEqual([12, 10]);
+    expect(read(11020)[0]).toBeCloseTo(12.04);
+    expect(read(11300)).toEqual([12.6, 10.6]);
+    time.configure(2, 50, 12000, true);
+    time.trackNodes(new Set(["first", "second"]), 12000);
+    expect(read(12000)).toEqual([0, 0]);
+  });
+
+  it("wraps each Time node at 32768 local seconds and carries time across skipped periods", () => {
+    const time = new NodeTime(1);
+    const first = time.elapsedSignal("first");
+    const second = time.elapsedSignal("second");
+    const periodMs = 32768 * 1000;
+    const read = (ms: number) => {
+      const cycle = ms / 2000;
+      time.advance(cycle, 0.5, ms);
+      return [first, second].map(pattern => pattern.queryArc(cycle, cycle)[0].value);
+    };
+    time.trackNodes(new Set(["first"]), 0);
+    time.trackNodes(new Set(["first", "second"]), periodMs - 2000);
+    expect(read(periodMs - 10)[0]).toBeCloseTo(32768 - 1 / 60, 8);
+    expect(read(periodMs)).toEqual([0, 2]);
+    expect(read(periodMs + 250)).toEqual([0.25, 2.25]);
+    expect(read(3 * periodMs + 500)).toEqual([0.5, 2.5]);
+  });
+
+  it("previews rate changes before Run and transfers only new Time nodes to the live phase", () => {
+    const live = new NodeTime(1);
+    const preview = new NodeTime(1);
+    const existing = new Set(["existing"]);
+    const all = new Set(["existing", "new"]);
+    live.trackNodes(existing, 0);
+    preview.trackNodes(existing, 0);
+    preview.trackNodes(all, 2000);
+    preview.configure(2, 60, 3000);
+
+    const read = (time: NodeTime, ms: number) => {
+      const cycle = ms / 2000;
+      time.advance(cycle, 0.5, ms);
+      return [...all].map(id => time.unwrappedElapsed(id, cycle));
+    };
+    expect(read(preview, 4000)).toEqual([5, 3]);
+    expect(read(live, 4000)[0]).toBe(4);
+
+    live.configure(2, 60, 4000);
+    live.trackNodes(all, 4000, preview);
+    preview.alignNodes(all, live, 4000);
+    expect(read(live, 4000)).toEqual([4, 3]);
+    expect(read(preview, 4000)).toEqual([4, 3]);
+    expect(read(live, 5000)).toEqual([6, 5]);
+    expect(read(preview, 5000)).toEqual([6, 5]);
   });
 
   it("uses full video durations across a tempo change and supports both cycle modes", () => {
@@ -574,6 +673,29 @@ describe("NodesDevil graph", () => {
     }
   });
 
+  it("restores confirmed variable creation as a node with both sockets", () => {
+    const draft = starterGraph();
+    const confirmed = makeNode("createVariable", 480, 120, { variable: "enabled" });
+    const unfinished = makeNode("createVariable", 480, 240, { name: "Amount", type: "number" });
+    draft.nodes.push(confirmed, unfinished);
+    draft.variables.push({ id: "enabled", name: "Enabled", type: "boolean" });
+    const key = "nodesdevil-session-v1";
+    const previous = localStorage.getItem(key);
+    try {
+      saveNodes({ draft, view: { x: 0, y: 0, zoom: 1, previews: [] }, media: [] });
+      const restored = loadNodes()!.draft;
+      const [combined, pending] = restored.nodes.slice(-2);
+      expect(combined).toEqual({ ...confirmed, kind: "variable" });
+      expect(inputsFor(restored, combined)).toMatchObject([{ label: "Set Value", type: "boolean" }]);
+      expect(outputsFor(restored, combined)).toMatchObject([{ label: "Get Value", type: "boolean" }]);
+      expect(pending).toEqual(unfinished);
+      expect(restored.variables).toEqual(draft.variables);
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+  });
+
   it("restores a legacy String variable with an inline value and a cable to Text Style", () => {
     initRegistry();
     const set = makeNode("variable", 0, 0, { variable: "ink" });
@@ -745,6 +867,42 @@ describe("NodesDevil graph", () => {
     expect(rgbHex(gradientSampler({ ...defaultGradient, stops })(0.25))).toBe("#808000");
   });
 
+  it("sequences typed Color inputs and keeps the timing of saved Color patterns", () => {
+    initRegistry();
+    const source = makeNode("color", 0, 0, { color: { hex: "#0000ff", alpha: 0.5 } });
+    const pattern = makeNode("color", 0, 0, {
+      mode: "pattern", inputCount: 2, "color-1": { hex: "#ff0000", alpha: 1 },
+    });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [source, pattern, output], variables: [],
+      edges: [
+        { from: source.id, to: pattern.id, input: "color-2" },
+        { from: pattern.id, to: output.id, input: "image" },
+      ],
+    };
+    expect(keepCompatibleEdges(graph).edges).toEqual(graph.edges);
+    expect(inputsFor(graph, pattern).map(({ id, type }) => [id, type])).toEqual([
+      ["color-1", "color"], ["color-2", "color"],
+    ]);
+    const sample = (cycle: number, patch = graph) => compileLiveGraph(patch).screens[0].queryArc(cycle, cycle)[0].value;
+    expect(sample(0.25)).toMatchObject({ color: "#ff0000", colorAlpha: 1 });
+    expect(sample(0.75)).toMatchObject({ color: "#0000ff", colorAlpha: 0.5 });
+
+    pattern.data = { pattern: "<red [green red]>" };
+    expect(sample(0.75)).toMatchObject({ color: "#ff0000" });
+    expect(sample(1.25)).toMatchObject({ color: "#0000ff", colorAlpha: 0.5 });
+    expect(sample(1.75)).toMatchObject({ color: "#ff0000" });
+
+    const text = makeNode("constant", 0, 0, { mode: "text", value: "orange blue" });
+    const legacy = keepCompatibleEdges({ ...graph, nodes: [...graph.nodes, text], edges: [
+      { from: text.id, to: pattern.id, input: "pattern" }, graph.edges[1],
+    ] });
+    expect(legacy.edges).toHaveLength(2);
+    expect(sample(0.25, legacy)).toMatchObject({ color: "#ffa500" });
+    expect(sample(0.75, legacy)).toMatchObject({ color: "#0000ff" });
+  });
+
   it("converts white or black to transparency and blends gray over a background", () => {
     initRegistry();
     const background = makeNode("color", 0, 0, { pattern: "red" });
@@ -880,8 +1038,8 @@ describe("NodesDevil graph", () => {
     initRegistry();
     const graph = starterGraph();
     const amount = makeNode("constant", 0, 0, { value: 0.3 });
-    const set = makeNode("variable", 0, 0, { variable: "amount" });
-    const get = makeNode("variable", 0, 0, { variable: "amount" });
+    const set = makeNode("variable", 0, 0, { variable: "amount", mode: "set" });
+    const get = makeNode("variable", 0, 0, { variable: "amount", mode: "get" });
     const opacity = makeNode("alpha", 0, 0);
     const [card, output] = graph.nodes;
     graph.nodes.push(amount, set, get, opacity);

@@ -10,9 +10,13 @@ npm install && npm run dev
 
 Open the browser to work in the node graph. Select **Code** to open the text editor, or **Export Code** to translate the current draft into runnable PicoDevil code. The export follows the connections to each Output. A Position node becomes `.x(...)` and `.y(...)`, and cables from signal nodes become expressions in those arguments. Specialized operations such as pixel fields use the NodesDevil runtime. Copy the result into the code editor or share the workspace URL. Select **Nodes** to continue editing, then export again to update the code. Press **Ctrl/Cmd+Enter** to run the active workspace.
 
+If **Run** reports a missing connection, such as “Image needs a connection,” the affected input turns red. A red outline briefly expands around the input, and a rectangular wave spreads from the socket across the graph. Connect a compatible output to that input and run the graph again. With reduced motion enabled, the red highlight appears without the animations.
+
+Once an Output has an image source, **Run**, previews, and **Export Code** skip any other Output with no attached cables. An Output with a loose cable still requires an image.
+
 ## Variables in the node graph
 
-Create a named, typed variable under **Variables**, then add a **Variable** node and select it. Connect a source to the input to turn the node into **Set Variable**. Other **Variable** nodes with the same selection and an empty input show **Get Variable** and read the connected value. Each variable can have one **Set Variable** node. For fixed numbers, strings, or booleans, use **Constant** under **Sources**.
+In **Add Node → Variables**, choose **Create Variable** to place a node on the graph. Enter a name, choose a type, and click **Create** or press **Enter** in the name field. The node switches to the new variable with a **Set Value** input and a **Get Value** output. The variable also appears at the top of **Variables** in the toolbar. Use **Set Variables** and **Get Variables** to add dedicated nodes elsewhere in the graph. Each variable can have one connected setter. For fixed numbers, strings, or booleans, use **Constant** under **Sources**.
 
 Under **Expressions** in **Add Node**, choose **Add**, **Subtract**, **Multiply**, **Divide**, **Remainder**, **Minimum**, or **Maximum** to calculate with two floats. You can switch operations later in the node's **Mode** dropdown. Enter values directly or connect signals or Float variables to **A** and **B**. Division and remainder return `0` when **B** is `0`. For image layers, search for **Add** or **Multiply** and select the corresponding **Blend** result.
 
@@ -41,9 +45,11 @@ Connect each **Text** output to the next node to combine changes. **Font Handwri
 
 ## Colors in the node graph
 
-Click the color swatch in **Color**, **Text Style**, or a **Color Ramp** stop to open the picker. The wheel controls hue and saturation, the vertical slider controls brightness, and **Alpha** controls opacity. Enter `#RRGGBB` to change RGB while keeping the current alpha, or `#RRGGBBAA` to set both. The picker remembers your last eight colors across reloads.
+Click the color swatch in **Color**, **Text Style**, or a **Color Ramp** stop to open the picker. The current HEX value is selected so you can type or paste a replacement immediately. The wheel controls hue and saturation, the vertical slider controls brightness, and **Alpha** controls opacity. Enter `#RRGGBB` to change RGB while keeping the current alpha, or `#RRGGBBAA` to set both. The picker remembers your last eight colors across reloads.
 
-Connect a **Color** output to a **Color** input such as the one on **Text Style**, or to an **Image** input to render a solid fill. Choose **Color** as the variable type to reuse a color through **Variable** nodes. On **Text Style**, **Clear color** returns the text to its inherited color. Switch the **Color** node to **Pattern** to sequence colors.
+Connect a **Color** output to a **Color** input such as the one on **Text Style**, or to an **Image** input to render a solid fill. Choose **Color** as the variable type to reuse a color through **Variable** nodes. On **Text Style**, **Clear color** returns the text to its inherited color.
+
+Switch **Color** to **Pattern** to play the Color inputs in order within each cycle. Set each color with its swatch or connect a Color cable. Use **+** to add a step and **−** to remove the last one. Changing the number of inputs in a saved mininotation pattern turns its colors into evenly spaced steps.
 
 Find **Color Ramp** under **Image**. Use **+** or double-click the gradient strip to add a stop. Each stop has a **Color** input beneath the strip. Set its color with the swatch or connect a **Color** node. Drag the handles to move the stops and reorder their inputs. Choose **Linear** for smooth transitions or **Constant** for hard steps.
 

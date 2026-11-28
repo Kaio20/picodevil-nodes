@@ -16,7 +16,10 @@ it("edits RGBA with the wheel, hex field and alpha slider, and shares recent col
     await textSwatch.click();
     const picker = page.getByRole("dialog", { name: "Text color picker" });
     const hex = picker.getByRole("textbox", { name: "Hex" });
-    await hex.fill("#cc4422");
+    await userEvent.keyboard("#cc4422");
+    await expect.element(hex).toHaveValue("#cc4422");
+    (hex.element() as HTMLInputElement).select();
+    await userEvent.copy();
     await userEvent.keyboard("{Enter}");
     expect(commits.at(-1)).toEqual({ hex: "#cc4422", alpha: 1 });
 
@@ -42,7 +45,15 @@ it("edits RGBA with the wheel, hex field and alpha slider, and shares recent col
 
     await textSwatch.click();
     await expect.element(picker).not.toBeInTheDocument();
-    await page.getByRole("button", { name: "Source color", exact: true }).click();
+    const sourceSwatch = page.getByRole("button", { name: "Source color", exact: true });
+    (sourceSwatch.element() as HTMLElement).focus();
+    await userEvent.keyboard("{Enter}");
+    const sourceHex = page.getByRole("dialog", { name: "Source color picker" }).getByRole("textbox", { name: "Hex" });
+    await userEvent.paste();
+    await expect.element(sourceHex).toHaveValue("#cc4422");
+    await userEvent.keyboard("{Enter}");
+    expect(commits.at(-1)).toEqual({ hex: "#cc4422", alpha: 1 });
+
     await page.getByRole("button", { name: "Use #12345680" }).click();
     expect(commits.at(-1)).toEqual({ hex: "#123456", alpha: 128 / 255 });
 

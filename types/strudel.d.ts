@@ -10,4 +10,10 @@ declare module "@strudel/mini" {
   }
 
   export function mini(input: string): Pattern;
+
+  export type MiniAst =
+    | { type_: "pattern"; source_: MiniAst[] }
+    | { type_: "element"; source_: MiniAst }
+    | { type_: "atom"; source_: string; location_: { start: { offset: number }; end: { offset: number } } };
+  export function mini2ast(quotedInput: string): MiniAst;
 }

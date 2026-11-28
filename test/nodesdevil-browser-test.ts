@@ -223,7 +223,7 @@ try {
     assert.equal(await pendingWire.count(), 0);
     const newOutput = page.locator('[data-kind="brightness"] [data-input=""]');
     const connected = (await newOutput.getAttribute("data-tooltip"))?.includes("Alt-click");
-    assert.equal(connected, socket === outputInput);
+    assert.equal(connected, true);
     assert.equal(await cableSearch.isVisible(), false);
     await undo.click();
     assert.equal(await page.locator('[data-kind="brightness"]').count(), 0);
@@ -287,6 +287,58 @@ try {
   await undo.click();
   assert.equal(await wires.count(), 2);
   assert.match(await sourceOutput.getAttribute("data-tooltip") ?? "", /Alt-click/);
+  const hueImage = hue.locator('[data-input="image"]');
+  await drag(page, hue.locator('[data-input=""]'), outputInput);
+  await hueImage.click({ modifiers: ["Alt"] });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const inputError = await run.evaluate(async button => {
+    (button as HTMLButtonElement).click();
+    const ports = document.querySelectorAll(".nd-port-error");
+    const port = ports[0];
+    const row = port?.closest(".nd-port-row");
+    const overlay = document.querySelector(".nd-error-effects");
+    const pulse = overlay?.querySelector(".nd-error-pulse");
+    const wave = overlay?.querySelector(".nd-error-wave");
+    const animations = overlay?.getAnimations({ subtree: true }) ?? [];
+    const pulseEffect = pulse?.getAnimations()[0]?.effect as KeyframeEffect | undefined;
+    const scales = pulseEffect?.getKeyframes().map(frame => frame.transform);
+    const socketBounds = port?.getBoundingClientRect();
+    const waveBounds = wave?.getBoundingClientRect();
+    const originDistance = socketBounds && waveBounds && Math.hypot(
+      waveBounds.x + waveBounds.width / 2 - socketBounds.x - socketBounds.width / 2,
+      waveBounds.y + waveBounds.height / 2 - socketBounds.y - socketBounds.height / 2,
+    );
+    const rowAnimations = row?.getAnimations().length;
+    const waveEasing = wave && getComputedStyle(wave).animationTimingFunction;
+    const pointerEvents = overlay && getComputedStyle(overlay).pointerEvents;
+    await Promise.all(animations.map(animation => animation.finished));
+    return {
+      target: Array.from(ports, item => [item.closest(".nd-node")?.getAttribute("data-kind"), item.getAttribute("data-input")]),
+      iterations: animations.map(animation => animation.effect?.getTiming().iterations),
+      scales, rowAnimations, originDistance, waveEasing, pointerEvents,
+      highlighted: port?.classList.contains("nd-port-error"),
+      color: port && getComputedStyle(port).borderTopColor,
+    };
+  });
+  assert.equal(await page.locator(".nd-status").textContent(), "Image needs a connection.");
+  assert.deepEqual(inputError.target, [["hue", "image"]]);
+  assert.deepEqual(inputError.iterations, [1, 1]);
+  assert(inputError.scales?.includes("scale(1.3)"));
+  assert.equal(inputError.rowAnimations, 0);
+  assert(inputError.originDistance !== undefined && inputError.originDistance < 1);
+  assert.equal(inputError.waveEasing, "ease-in");
+  assert.equal(inputError.pointerEvents, "none");
+  assert.equal(inputError.highlighted, true);
+  assert.equal(inputError.color, "rgb(246, 117, 122)");
+  await page.locator(".nd-error-effects").waitFor({ state: "detached" });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await run.click();
+  assert.match(await hueImage.getAttribute("class") ?? "", /nd-port-error/);
+  assert.equal(await page.locator(".nd-error-effects").count(), 0);
+  await page.emulateMedia({ reducedMotion: null });
+  await undo.click();
+  assert.equal(await page.locator(".nd-port-error").count(), 0);
+  await undo.click();
   await hue.getByRole("button", { name: "Preview Hue Rotate" }).click();
   const firstHue = await waitPixel(hue.locator("canvas"), rgba => rgba[3] === 255 && rgba.slice(0,3).some((channel, i) => Math.abs(channel - red[i]) > 35));
   await drag(page, hue.locator('[data-input=""]'), { x: graph.x + 695, y: graph.y + 350 });
@@ -377,6 +429,7 @@ try {
   const outputCategory = page.locator('.nd-menu-category[data-category="Output"]');
   assert.equal(await outputCategory.evaluate(category => (category.nextElementSibling as HTMLElement)?.dataset.category), "Variables");
   await outputCategory.click();
+  await nodeResults.getByRole("button", { name: "Output", exact: true }).click();
   assert.equal(await page.locator('[data-kind="output"]').count(), 2);
   await undo.click();
 
@@ -407,7 +460,7 @@ try {
   assert.equal(await outputs.count(), 1);
   await undo.click();
   await branchHeader.click({ position: { x: 4, y: 12 } });
-  await page.mouse.move(wireMidpoint.x, wireMidpoint.y);
+  await hue.locator(".nd-port-out").getByText("Image", { exact: true }).hover();
   const branch = page.getByRole("button", { name: "Connect as branch", exact: true });
   await branch.click();
   assert.equal(await wires.count(), 4);
@@ -700,24 +753,54 @@ try {
   await undo.click();
   await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("Time");
-  await nodeResults.getByRole("button", { name: "Time", exact: true }).click();
+  await nodeResults.getByRole("button", { name: "Local Time", exact: true }).click();
   const time = page.locator('[data-kind="time"]');
-  await time.first().getByRole("button", { name: "Preview Time", exact: true }).click();
+  await time.first().getByRole("button", { name: "Preview Local Time", exact: true }).click();
+  await page.waitForFunction(() => {
+    const readout = document.querySelector('[data-kind="time"] .nd-preview-status')?.textContent ?? "";
+    return /\.\d{3}$/.test(readout) && Number(readout) > 0.05;
+  });
   await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("Time");
-  await nodeResults.getByRole("button", { name: "Time", exact: true }).click();
-  const rateInputs = time.getByRole("spinbutton", { name: "Global Rate (beats/s)" });
+  await nodeResults.getByRole("button", { name: "Local Time", exact: true }).click();
+  await time.last().getByRole("button", { name: "Preview Local Time", exact: true }).click();
+  assert.equal(await time.getByRole("button", { name: "Local Time Elapsed (s) output (number)" }).count(), 2);
+  await page.waitForFunction(() => {
+    const values = [...document.querySelectorAll('[data-kind="time"] .nd-preview-status')].map(node => Number(node.textContent));
+    return values.length === 2 && values[1] > 0 && values[0] - values[1] > 0.035;
+  });
+  const rateInputs = time.getByRole("spinbutton", { name: "Global Rate multiplier" });
   assert.equal(await rateInputs.count(), 2);
   assert.equal(await rateInputs.first().inputValue(), "0.1");
   assert.equal(await rateInputs.last().inputValue(), "0.1");
+  assert.equal(await page.getByRole("spinbutton", { name: "Time updates/s" }).count(), 0);
   const playbackCps = await page.evaluate(() => (window as any).pdLiveFrame.cps);
+  await rateInputs.first().fill("0");
+  const pausedPreview = await page.evaluate(async () => {
+    const readout = document.querySelector('[data-kind="time"] .nd-preview-status')!;
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const before = Number(readout.textContent);
+    const liveBefore = (window as any).pdLiveFrame.elapsed;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return { before, after: Number(readout.textContent), liveAdvanced: (window as any).pdLiveFrame.elapsed - liveBefore };
+  });
+  assert.equal(pausedPreview.after, pausedPreview.before);
+  assert(pausedPreview.liveAdvanced > 0.015);
   await rateInputs.first().fill("0.0017");
   assert.equal(await rateInputs.last().inputValue(), "0.0017");
-  await rateInputs.first().fill("1");
-  assert.equal(await rateInputs.last().inputValue(), "1");
-  assert.equal(await page.evaluate(() => (window as any).pdLiveFrame.timeRate), 0.1);
+  await rateInputs.first().fill("2");
+  assert.equal(await rateInputs.last().inputValue(), "2");
+  await page.waitForFunction(previous =>
+    Number(document.querySelector('[data-kind="time"] .nd-preview-status')?.textContent) > previous + 0.15, pausedPreview.after);
+  const beforeRateChange = await page.evaluate(() => (window as any).pdLiveFrame);
+  assert.equal(beforeRateChange.timeRate, 0.1);
   await run.click();
-  await page.waitForFunction(() => (window as any).pdLiveFrame?.timeRate === 1);
+  await page.waitForFunction(() => (window as any).pdLiveFrame?.timeRate === 2);
+  const afterRateChange = await page.evaluate(() => (window as any).pdLiveFrame);
+  assert.equal(afterRateChange.timeUpdates, 60);
+  assert(afterRateChange.elapsed >= beforeRateChange.elapsed);
+  assert(afterRateChange.elapsed - beforeRateChange.elapsed <= (afterRateChange.wall - beforeRateChange.wall) / 500 + 0.05);
+  const previewBeforeStall = Number(await time.first().locator(".nd-preview-status").textContent());
   const timeBeforeStall = await page.evaluate(async () => {
     const win = window as any;
     const before = win.pdLiveFrame;
@@ -730,16 +813,16 @@ try {
   const timeAfterStall = await page.evaluate(() => (window as any).pdLiveFrame);
   const seconds = (timeAfterStall.wall - timeBeforeStall.wall) / 1000;
   assert(seconds >= 0.4);
-  assert(Math.abs(timeAfterStall.beats - timeBeforeStall.beats - seconds) < 0.001);
+  assert(Math.abs(timeAfterStall.elapsed - timeBeforeStall.elapsed - seconds * 2) < 0.041);
   assert(Math.abs(timeAfterStall.cycle - timeBeforeStall.cycle - seconds * playbackCps) < 0.001);
-  await page.waitForFunction(() => {
-    const readout = Number(document.querySelector('[data-kind="time"] .nd-preview-status')?.textContent);
-    return Math.abs(readout - (window as any).pdLiveFrame.beats) < 0.15;
-  });
+  await page.waitForFunction(before => {
+    const readout = document.querySelector('[data-kind="time"] .nd-preview-status')?.textContent ?? "";
+    return /^\d+(\.\d{1,3})?$/.test(readout) && Number(readout) > before + 0.5;
+  }, previewBeforeStall);
   await rateInputs.last().fill("0");
   assert.equal(await rateInputs.first().inputValue(), "0");
   assert.match(await run.getAttribute("class") ?? "", /pending/);
-  assert.equal(await page.evaluate(() => (window as any).pdLiveFrame.timeRate), 1);
+  assert.equal(await page.evaluate(() => (window as any).pdLiveFrame.timeRate), 2);
   await run.click();
   await page.waitForFunction(() => (window as any).pdLiveFrame?.timeRate === 0);
   assert.equal(await page.evaluate(() => (window as any).pdLiveFrame.cps), playbackCps);
@@ -841,9 +924,36 @@ try {
 
   await page.getByRole("button", { name: "Variables", exact: true }).click();
   const variables = page.locator(".nd-variables");
-  await variables.getByRole("textbox", { name: "Variable name" }).fill("Enabled");
-  await choose(variables, variables.getByRole("combobox", { name: "Variable type" }), "Boolean");
+  await variables.getByRole("textbox", { name: "Variable name" }).fill("Previous");
   await variables.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("button", { name: "Add Node" }).click();
+  await page.locator('.nd-menu-category[data-category="Variables"]').click();
+  assert.deepEqual(await nodeResults.getByRole("button").allTextContents(), ["Get Variables", "Set Variables", "Create Variable"]);
+  await nodeResults.getByRole("button", { name: "Create Variable", exact: true }).click();
+  const creator = page.locator('[data-kind="createVariable"]');
+  const variableName = creator.getByRole("textbox", { name: "Variable name" });
+  const variableType = creator.getByRole("combobox", { name: "Variable type" });
+  const creatorId = await creator.getAttribute("data-node-id");
+  const creatorPosition = await creator.evaluate(node => [(node as HTMLElement).style.left, (node as HTMLElement).style.top]);
+  assert.equal(await creator.locator(".nd-node-title").textContent(), "Create Variable");
+  assert.equal(await nodeResults.isVisible(), false);
+  assert.equal(await creator.locator(".nd-port").count(), 0);
+  assert(await variableName.evaluate(input => document.activeElement === input));
+  assert.equal(await variableType.getAttribute("data-value"), "number");
+  await variableName.fill("Enabled");
+  await choose(creator, variableType, "Boolean");
+  assert.equal(await variables.isVisible(), false);
+  await variableName.press("Enter");
+  assert(await variables.isVisible());
+  assert.equal(await creator.count(), 0);
+  const combinedVariable = page.locator(`[data-node-id="${creatorId}"][data-kind="variable"]`);
+  assert.deepEqual(await combinedVariable.evaluate(node => [(node as HTMLElement).style.left, (node as HTMLElement).style.top]), creatorPosition);
+  assert.equal(await combinedVariable.getByRole("combobox", { name: "Variable" }).innerText(), "Enabled");
+  assert.equal(await combinedVariable.getByRole("button", { name: "Variable Get Value output (boolean)", exact: true }).count(), 1);
+  assert.equal(await combinedVariable.getByRole("button", { name: "Variable Set Value (boolean)", exact: true }).count(), 1);
+  assert.deepEqual(await variables.getByRole("textbox", { name: "Rename variable" }).evaluateAll(fields =>
+    fields.map(field => (field as HTMLInputElement).value)), ["Enabled", "Previous"]);
+
   await page.getByRole("button", { name: "Add Node" }).click();
   const categoryColors = await page.locator(".nd-menu-category[data-category]").evaluateAll(headings =>
     headings.map(heading => getComputedStyle(heading).backgroundColor));
@@ -936,30 +1046,40 @@ try {
   assert.equal(await nodeResults.locator("button:focus").count(), 1);
   await page.keyboard.press("ArrowLeft");
   assert.equal(await page.locator(".nd-menu-category:focus").count(), 1);
+  await cableSearch.fill("Get Variable");
+  assert.equal(await nodeResults.getByRole("button").count(), 1);
+  await nodeResults.getByRole("button", { name: "Get Variables", exact: true }).click();
+  const getter = page.locator('[data-kind="variable"]').last();
+  await choose(getter, getter.getByRole("combobox", { name: "Variable" }), "Enabled");
+  assert.equal(await getter.locator(".nd-node-title").textContent(), "Get Enabled");
+  assert.equal(await getter.locator(".nd-port-out").innerText(), "Get Value");
+  assert.equal(await getter.locator('[data-input="value"]').count(), 0);
+
+  await page.getByRole("button", { name: "Add Node" }).click();
   await cableSearch.fill("Set Variable");
   assert.equal(await nodeResults.getByRole("button").count(), 1);
-  await nodeResults.getByRole("button", { name: "Variable", exact: true }).click();
-  const variable = page.locator('[data-kind="variable"]');
-  const variableTitle = variable.locator(".nd-node-title");
-  assert.equal(await variableTitle.textContent(), "Get Enabled");
-  const variablePicker = variable.getByRole("combobox", { name: "Variable" });
-  assert.equal(await variablePicker.innerText(), "Enabled");
-  const variableInput = page.getByRole("button", { name: "Variable Set Value (boolean)", exact: true });
-  const variableOutput = page.getByRole("button", { name: "Variable Get Value output (boolean)", exact: true });
-  assert.equal(await variable.locator(".nd-port-row").filter({ has: variableInput }).innerText(), "Set Value");
-  assert.equal(await variable.locator(".nd-port-out").filter({ has: variableOutput }).innerText(), "Get Value");
-  assert.equal(await variable.getByRole("checkbox").count(), 0);
+  await nodeResults.getByRole("button", { name: "Set Variables", exact: true }).click();
+  const setter = page.locator('[data-kind="variable"]').last();
+  await choose(setter, setter.getByRole("combobox", { name: "Variable" }), "Enabled");
+  const variableTitle = setter.locator(".nd-node-title");
+  const variableInput = setter.getByRole("button", { name: "Variable Set Value (boolean)", exact: true });
+  assert.equal(await variableTitle.textContent(), "Set Enabled");
+  assert.equal(await setter.locator(".nd-port-row").innerText(), "Set Value");
+  assert.equal(await setter.locator(".nd-port-out").count(), 0);
+  assert.equal(await setter.getByRole("checkbox").count(), 0);
   await variableInput.press("Enter");
   await cableSearch.fill("Constant");
   await nodeResults.getByRole("button", { name: "Constant · Boolean", exact: true }).click();
-  assert.equal(await variableTitle.textContent(), "Set Enabled");
+  assert.equal(await variableInput.evaluate(port => port.closest(".nd-connected") !== null), true);
   await variableInput.dispatchEvent("contextmenu");
-  assert.equal(await variableTitle.textContent(), "Get Enabled");
+  assert.equal(await variableTitle.textContent(), "Set Enabled");
+  assert.equal(await variableInput.evaluate(port => port.closest(".nd-connected") !== null), false);
   assert.equal(await axisTag.inputValue(), "TEST");
 
-  const portColors = await page.locator(".nd-port").evaluateAll(ports => ports.map(port => {
-    const style = getComputedStyle(port);
-    return [(port as HTMLElement).dataset.type, style.getPropertyValue("--nd-port-color").trim()];
+  const portColors = await page.locator(".nd-port").evaluateAll(ports => ports.flatMap(port => {
+    const dot = port as HTMLElement;
+    if (dot.style.getPropertyValue("--nd-port-color")) return [];
+    return [[dot.dataset.type, getComputedStyle(dot).getPropertyValue("--nd-port-color").trim()]];
   }));
   const palette = await page.evaluate(() => {
     const style = getComputedStyle(document.documentElement);
@@ -1156,6 +1276,71 @@ try {
   assert.equal(await page.locator(".nd-node").count(), 1);
   assert.equal(await outputs.getAttribute("data-node-id"), "output");
   assert.equal(await wires.count(), 0);
+
+  await page.evaluate(() => {
+    const key = "nodesdevil-session-v1";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const graph = {
+      nodes: [
+        { id: "upstream", kind: "testCard", x: 40, y: 110, data: {} },
+        { id: "source", kind: "brightness", x: 285, y: 110, data: {} },
+        { id: "target", kind: "scale", x: 530, y: 110, data: {} },
+        { id: "downstream", kind: "output", x: 850, y: 110, data: {} },
+        { id: "branch", kind: "output", x: 600, y: 410, data: {} },
+      ],
+      edges: [
+        { from: "upstream", to: "source", input: "image" },
+        { from: "source", to: "target", input: "image" },
+        { from: "target", to: "downstream", input: "image" },
+        { from: "source", to: "branch", input: "image" },
+      ],
+      variables: [],
+    };
+    localStorage.setItem(key, JSON.stringify({ ...session, draft: graph, live: graph, view: { x: 75, y: 45, zoom: 0.75, previews: [] } }));
+  });
+  await page.reload();
+  const cableSource = sourceCard.locator('.nd-port-out .nd-port');
+  const cablePoint = await wires.nth(1).evaluate(wire => {
+    const path = wire as SVGPathElement;
+    const point = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+  const savedDraft = () => page.evaluate(() => JSON.parse(localStorage.getItem("nodesdevil-session-v1")!).draft as import("../src/node-graph").Graph);
+  const beforeInsertion = await savedDraft();
+  const emptyDrop = { x: cablePoint.x, y: cablePoint.y - 55 };
+  assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".nd-node,.nd-wire-hit"), emptyDrop), null);
+  await drag(page, cableSource, emptyDrop);
+  assert.equal(await page.locator(".nd-wire-inserting").count(), 1);
+  await cableSearch.fill("Hue Rotate");
+  await nodeResults.getByRole("button", { name: "Hue Rotate", exact: true }).click();
+  const insertedDraft = await savedDraft();
+  const insertedNode = insertedDraft.nodes.find(node => node.kind === "hue")!;
+  assert(insertedNode);
+  assert.deepEqual(insertedDraft.edges, [beforeInsertion.edges[0], ...beforeInsertion.edges.slice(2),
+    { from: "source", to: insertedNode.id, input: "image" }, { from: insertedNode.id, to: "target", input: "image" }]);
+  const [upstream, cableSourceNode, target, downstream, fork] = insertedDraft.nodes;
+  assert.deepEqual([upstream, cableSourceNode, fork], [beforeInsertion.nodes[0], beforeInsertion.nodes[1], beforeInsertion.nodes[4]]);
+  const shift = target.x - beforeInsertion.nodes[2].x;
+  assert(shift > 0);
+  assert.deepEqual(downstream, { ...beforeInsertion.nodes[3], x: beforeInsertion.nodes[3].x + shift });
+  assert.equal(target.y, beforeInsertion.nodes[2].y);
+  const insertedWidth = await hue.evaluate(card => (card as HTMLElement).offsetWidth);
+  assert(insertedNode.x >= cableSourceNode.x + sourceWidth + 23);
+  assert(target.x >= insertedNode.x + insertedWidth + 23);
+  await undo.click();
+  assert.deepEqual(await savedDraft(), beforeInsertion);
+  await page.getByRole("button", { name: "Redo", exact: true }).click();
+  assert.deepEqual(await savedDraft(), insertedDraft);
+  await undo.click();
+
+  await drag(page, cableSource, { x: cablePoint.x, y: cablePoint.y + 13 });
+  await cableSearch.fill("Image to Float");
+  await nodeResults.getByRole("button", { name: "Conversion · Image to Float", exact: true }).click();
+  const branchDraft = await savedDraft();
+  const conversion = branchDraft.nodes.at(-1)!;
+  assert.equal(conversion.data.mode, "imageToFloat");
+  assert.deepEqual(branchDraft.nodes.slice(0, -1), beforeInsertion.nodes);
+  assert.deepEqual(branchDraft.edges, [...beforeInsertion.edges, { from: "source", to: conversion.id, input: "image" }]);
 
   await page.evaluate(() => {
     const key = "nodesdevil-session-v1";
@@ -1398,6 +1583,15 @@ try {
     const wire = document.querySelector(".nd-wire-hit");
     return wire && getComputedStyle(wire).pointerEvents === "stroke";
   });
+  const unusedOutput = page.locator('[data-node-id="out-b"]');
+  const unusedPreview = unusedOutput.getByRole("button", { name: "Preview Output" });
+  await unusedPreview.click();
+  await unusedOutput.locator(".nd-thumbnail[hidden]").waitFor({ state: "attached" });
+  assert.equal(await unusedOutput.locator(".nd-preview-status").textContent(), "");
+  await run.click();
+  assert.equal(await page.locator(".nd-status").textContent(), "Running");
+  assert.equal(await page.locator(".nd-port-error").count(), 0);
+  await unusedPreview.click();
   const wireMiddle = await wires.first().evaluate(wire => {
     const path = wire as SVGPathElement;
     const { x, y } = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM()!);
@@ -1411,11 +1605,42 @@ try {
   const outA = page.locator('[data-node-id="out-a"] [data-input="image"]');
   const outB = page.locator('[data-node-id="out-b"] [data-input="image"]');
   const feed = page.locator('[data-node-id="feed"] [data-input=""]');
+  const beforeJunctionInsertion = await savedDraft();
+  const junctionId = beforeJunctionInsertion.nodes.find(node => node.kind === "junction")!.id;
+  const destination = await center(outA);
+  const routedDrop = { x: destination.x - 42, y: destination.y - 66 };
+  for (const [origin, from, to, input] of [
+    [feed, "feed", junctionId, "in"],
+    [junction.locator('[data-input=""]'), junctionId, "out-a", "image"],
+  ] as const) {
+    await drag(page, origin, routedDrop);
+    await cableSearch.fill("Brightness");
+    await nodeResults.getByRole("button", { name: "Brightness", exact: true }).click();
+    const draft = await savedDraft();
+    const effect = draft.nodes.at(-1)!;
+    assert.deepEqual(draft.edges, [...beforeJunctionInsertion.edges.filter(edge => edge.from !== from || edge.to !== to),
+      { from, to: effect.id, input: "image" }, { from: effect.id, to, input }]);
+    await undo.click();
+    assert.deepEqual(await savedDraft(), beforeJunctionInsertion);
+  }
   await drag(page, junction.locator('[data-input=""]'), outB);
   assert.equal(await wires.count(), 3);
   const movedJunction = { x: wireMiddle.x + 35, y: wireMiddle.y + 46 };
   await drag(page, junctionHandle, movedJunction);
   assert(Math.abs((await center(junctionHandle)).y - movedJunction.y) < 2);
+  const beforeRoutedInsertion = await savedDraft();
+  await drag(page, feed, routedDrop);
+  await cableSearch.fill("Brightness");
+  await nodeResults.getByRole("button", { name: "Brightness", exact: true }).click();
+  const afterRoutedInsertion = await savedDraft();
+  const routedEffect = afterRoutedInsertion.nodes.at(-1)!;
+  assert.deepEqual(afterRoutedInsertion.edges, [beforeRoutedInsertion.edges[0], beforeRoutedInsertion.edges[2],
+    { from: junctionId, to: routedEffect.id, input: "image" }, { from: routedEffect.id, to: "out-a", input: "image" }]);
+  for (const id of ["feed", junctionId, "out-b"]) {
+    assert.deepEqual(afterRoutedInsertion.nodes.find(node => node.id === id), beforeRoutedInsertion.nodes.find(node => node.id === id));
+  }
+  await undo.click();
+  assert.deepEqual(await savedDraft(), beforeRoutedInsertion);
   await run.click();
   assert.equal(await page.locator(".nd-status").textContent(), "Running");
 
@@ -1498,6 +1723,28 @@ try {
       node.kind === "convert" && node.data.mode === "imageToFloat" && node.data.automatic);
   };
   assert(await hasImageConversion());
+  const beforeConvertedInsertion = await savedDraft();
+  const converter = beforeConvertedInsertion.nodes.find(node => node.kind === "convert")!;
+  const convertedCable = await wires.last().evaluate(wire => {
+    const path = wire as SVGPathElement;
+    const point = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+  for (const [name, from, to, input, targetInput] of [
+    ["Range", converter.id, "mask-opacity", "signal", "value"],
+    ["Hue Rotate", "mask-ramp", converter.id, "image", "image"],
+  ]) {
+    await drag(page, maskImage, convertedCable);
+    await cableSearch.fill(name);
+    await nodeResults.getByRole("button", { name, exact: true }).click();
+    const draft = await savedDraft();
+    const effect = draft.nodes.at(-1)!;
+    assert.deepEqual(draft.nodes.find(node => node.id === converter.id)?.data, converter.data);
+    assert.deepEqual(draft.edges, [...beforeConvertedInsertion.edges.filter(edge => edge.from !== from || edge.to !== to),
+      { from, to: effect.id, input }, { from: effect.id, to, input: targetInput }]);
+    await undo.click();
+    assert.deepEqual(await savedDraft(), beforeConvertedInsertion);
+  }
   await run.click();
   assert.equal(await page.locator(".nd-status").textContent(), "Running");
   const maskedPreview = maskedOpacity.locator(".nd-thumbnail");
@@ -1559,6 +1806,18 @@ try {
   }, url);
   await page.reload();
   const exportSource = page.locator('[data-node-id="export-source"]');
+  const textOutput = page.locator('[data-node-id="export-text"] .nd-port-out .nd-port');
+  const textLayerImageInput = page.locator('[data-node-id="export-text-position"] [data-input="image"]');
+  const dotColor = (dot: Locator) => dot.evaluate(port => getComputedStyle(port).getPropertyValue("--nd-port-color").trim());
+  assert.equal(await textLayerImageInput.getAttribute("data-type"), "visual");
+  assert.equal(await dotColor(textLayerImageInput), await dotColor(textOutput));
+  const textWire = page.locator('.nd-wires path[data-type="textLayer"]:not(.nd-wire-hit, .nd-wire-insert-hit)');
+  assert.equal(await textWire.evaluate(wire => getComputedStyle(wire).stroke),
+    await textOutput.evaluate(port => getComputedStyle(port).backgroundColor));
+  await textLayerImageInput.click({ modifiers: ["Alt"] });
+  assert.equal(await dotColor(textLayerImageInput), await dotColor(exportSource.locator(".nd-port-out .nd-port")));
+  await undo.click();
+  assert.equal(await dotColor(textLayerImageInput), await dotColor(textOutput));
   const originalCard = (await exportSource.elementHandle())!;
   const originalWire = (await wires.first().elementHandle())!;
   const originalCurve = await originalWire.getAttribute("d");

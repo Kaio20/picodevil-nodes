@@ -2,7 +2,7 @@ import { CYCLES_PER_SECOND } from "./config";
 import { clampUnit, colorCss, colorFromCss, isColorValue } from "./color-value";
 import { gradientSampler } from "./gradient";
 import {
-  expressionOperations, fftBands, inputsFor, isFontVariation, isPixelOutput, modeFor, outputType,
+  expressionOperations, fftBands, inputsFor, isFontVariation, isPixelOutput, modeFor, outputNodesForEvaluation, outputType,
   rampInterpolation, rampStops, signalGraph, testCardStrips, type Band, type Graph, type GraphEdge, type GraphNode, type Literal,
 } from "./node-graph";
 import type { MediaEntry } from "./media-registry";
@@ -26,12 +26,14 @@ function graphCall(name: string, graph: Graph, media: readonly MediaEntry[]) {
     .map(({ id, name, url, type, collection }) => ({ id, name, url, type, collection }));
   const list = (items: readonly object[], indent: string) => items.length
     ? `[\n${items.map(item => `${indent}  ${codeLiteral(item)},\n`).join("")}${indent}]` : "[]";
+  const settings = (["tempo", "tempoRate", "timeUpdates"] as const)
+    .flatMap(key => graph[key] === undefined ? [] : [`  ${key}: ${graph[key]},\n`]).join("");
 
   return `${name}({
   nodes: ${list(graph.nodes, "  ")},
   edges: ${list(graph.edges, "  ")},
   variables: ${list(graph.variables, "  ")},
-}${sources.length ? `, ${list(sources, "")}` : ""})`;
+${settings}}${sources.length ? `, ${list(sources, "")}` : ""})`;
 }
 
 interface Expression {
@@ -73,7 +75,7 @@ export function exportNodeCode(draft: Graph, media: readonly MediaEntry[]): stri
   }
   const setters = new Map(graph.nodes.filter(node => node.kind === "variable" && inputs.get(node.id)?.has("value"))
     .map(node => [node.data.variable, node]));
-  const outputs = graph.nodes.filter(node => node.kind === "output");
+  const outputs = outputNodesForEvaluation(draft);
   const tempo = graph.nodes.filter(node => node.kind === "tempo").at(-1);
   const reachable = new Set<string>();
   function countUses(id: string, output?: string) {
@@ -166,8 +168,8 @@ export function exportNodeCode(draft: Graph, media: readonly MediaEntry[]): stri
     visiting.add(cacheKey);
     try {
       let result: Expression | undefined;
-      if (renderColor && node.kind === "color" && modeFor(node)?.id === "pattern" && !inputs.get(id)?.has("pattern")) {
-        const pattern = node.data.pattern ?? inputsFor(graph, node)[0]?.default;
+      if (renderColor && node.kind === "color" && modeFor(node)?.id === "pattern" && !inputs.get(id)?.size) {
+        const pattern = node.data.pattern;
         if (typeof pattern === "string" && !pattern.includes(":") &&
             miniTokens(pattern).every(token => token === "~" || token === "-" || colorFromCss(token)?.alpha === 1)) {
           result = invoke("color", expression(JSON.stringify(pattern)));
@@ -246,7 +248,13 @@ export function exportNodeCode(draft: Graph, media: readonly MediaEntry[]): stri
           `  ...${codeLiteral(colors)}.map((shade, i, colors) => color(shade).x((i + 0.5) / colors.length).y(${y}).width(1 / colors.length).height(${height}))`);
         return expression(`stack(\n${strips.join(",\n")}\n)`);
       }
-      case "color": return mode === "solid" ? required("color") : undefined;
+      case "color": {
+        if (mode === "solid") return required("color");
+        if (node.data.pattern === undefined && !incoming?.has("pattern")) {
+          return invoke("sequence", ...sockets.map(socket => required(socket.id)));
+        }
+        return;
+      }
       case "constant":
       case "tempo": return value();
       case "variable": {
@@ -409,6 +417,9 @@ export function exportNodeCode(draft: Graph, media: readonly MediaEntry[]): stri
       nodes: graph.nodes.filter(node => fallbackNodes.has(node.id)).map(node => ({ ...node, x: 0, y: 0 })),
       edges: graph.edges.filter(edge => fallbackNodes.has(edge.from) && fallbackNodes.has(edge.to)),
       variables: graph.variables.filter(item => fallbackVariables.has(item.id)),
+      tempo: graph.tempo,
+      tempoRate: graph.tempoRate,
+      timeUpdates: graph.timeUpdates,
     };
     setup.unshift(`const readNode = ${graphCall("nodeGraphValues", fragment, media)}`);
   }

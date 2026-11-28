@@ -1,6 +1,7 @@
-import { Pattern, pure, reify, sine, cosine, saw, tri, stack, silence } from "@strudel/core";
+import { Pattern, pure, reify, sequence, sine, cosine, saw, tri, stack, silence } from "@strudel/core";
 import { mini } from "@strudel/mini";
 import { color } from "./color-pattern";
+import { replaceColorPatternTokens } from "./node-color-pattern";
 import { s } from "./screen-pattern";
 import { text } from "./text-pattern";
 import { choose, rand } from "./event-random";
@@ -9,14 +10,14 @@ import { fft, previewFft } from "./fft-audio";
 import { isTexture, resolveMedia, resolveMediaId } from "./media-registry";
 import { resolveUrl } from "./server-config";
 import { catalogTexture } from "./texture-library";
-import { getRuntimeCps, setRuntimeCps } from "./config";
+import { CYCLES_PER_SECOND, getRuntimeCps, setRuntimeCps } from "./config";
 import { createMetrics } from "./frame-metrics";
 import { FrameRenderer } from "./renderer";
 import { WebGLRenderer } from "./webgl-renderer";
 import { createVideoPoolManager } from "./video-pool-manager";
 import { hashStr, withLayoutCounter } from "./layout-counter";
 import { collectScreens, getNamedScreenIndices, nextAutoRenderName, registerAutoHidden, resetRegistry, restoreRegistry, snapshotRegistry } from "./pattern-registry";
-import { acceptsPixelField, expressionInputType, expressionOperations, fftBands, graphTempoRate, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, listInputCount, listInputId, modeFor, outputType, previewType, rampInterpolation, rampStops, signalGraph, testCardStrips, variableFor, VIDEO_TEST_CARD, type Band, type Graph, type GraphEdge, type GraphNode, type Literal } from "./node-graph";
+import { acceptsPixelField, expressionInputType, expressionOperations, fftBands, graphTempoRate, graphTimeUpdates, inputsFor, isFontVariation, isPixelOutput, isRenderable, isVariableSetter, listInputCount, listInputId, modeFor, outputNodesForEvaluation, outputType, previewType, rampInterpolation, rampStops, signalGraph, testCardStrips, variableFor, VIDEO_TEST_CARD, type Band, type Graph, type GraphEdge, type GraphNode, type Literal } from "./node-graph";
 import { gradientSampler, type Gradient } from "./gradient";
 import { colorRamp } from "./effects-controls";
 import { clampUnit, colorCss, colorFromCss, colorHex, isColorValue, rgbFromHex, rgbHex, whiteColor, type ColorValue } from "./color-value";
@@ -50,7 +51,7 @@ class PixelField {
 
 type UniformValue = Pattern | Literal;
 type Value = UniformValue | PixelField;
-type PreviewValue = { layer: string } | { value: Value } | { error: string };
+type PreviewValue = { layer: string } | { value: Value; elapsed?: boolean } | { error: string } | { empty: true };
 const sceneSource = /(?:^|[\s<\[,(])(?:all|prev)(?=$|[\s>\],):*?!/@])/;
 const waveforms: Record<string, Pattern> = { sine, cosine, saw, tri };
 const rampPreview = "rampPreview";
@@ -167,9 +168,15 @@ interface RuntimeContext {
   nodes: Map<string, GraphNode>;
 }
 
+export class NodeInputError extends Error {
+  constructor(message: string, readonly nodeId: string, readonly inputId: string) {
+    super(message);
+  }
+}
+
 function buildValues(
   graph: Graph, preview: boolean,
-  transport = new NodeTransport(), motions = new NodeMotions(new NodeTime(graphTempoRate(graph))),
+  transport = new NodeTransport(), motions = new NodeMotions(new NodeTime(graphTempoRate(graph), 0, graphTimeUpdates(graph))),
 ) {
   const values = new Map<string, Value>();
   const visiting = new Set<string>();
@@ -200,7 +207,9 @@ function buildValues(
         }
         if (value !== undefined) {
           if (value instanceof PixelField) {
-            if (!acceptsPixelField(node, socket.id)) throw new Error(`${socket.label} needs one value for the whole frame.`);
+            if (!acceptsPixelField(node, socket.id)) {
+              throw new NodeInputError(`${socket.label} needs one value for the whole frame.`, node.id, socket.id);
+            }
             if (socket.unitInterval) value = value.map(item => ({ kind: "clamp", value: item }));
             return [[socket.id, value] as const];
           }
@@ -209,7 +218,7 @@ function buildValues(
           return [[socket.id, value] as const];
         }
         if (socket.optional) return [];
-        throw new Error(`${socket.label} needs a connection.`);
+        throw new NodeInputError(`${socket.label} needs a connection.`, node.id, socket.id);
       }));
       const value = withLayoutCounter(hashStr(node.id), () => buildNode(node, inputs, graph, preview, setters, read, { transport, motions, incoming, nodes }, output));
       values.set(key, value);
@@ -237,7 +246,7 @@ function buildNode(
   const mode = modeFor(node)?.id;
   const wrapTime = (value: Value) => context.motions.isTime(value) ? value.withValue(wrapCycle) : value;
   switch (node.kind) {
-    case "time": return output === "rate" ? context.motions.time.rateSignal : context.motions.time.beatsSignal;
+    case "time": return output === "rate" ? context.motions.time.rateSignal : context.motions.elapsed(node.id);
     case "video": return nodeVideoPattern(node.id, Array.from({ length: listInputCount(node) }, (_, i) =>
       input[listInputId("video", i)] as string | Pattern ?? ""), mode ?? "clipEnd", context.transport);
     case "media":
@@ -312,14 +321,35 @@ function buildNode(
     }
     case "color": {
       if (mode !== "pattern") return input.color;
+      const saved = input.pattern ?? node.data.pattern;
+      if (saved === undefined) {
+        return sequence(...Array.from({ length: listInputCount(node) }, (_, index) => input[listInputId("color", index)]));
+      }
+
+      let notation = typeof saved === "string" ? saved : undefined;
+      const wired = new Map<string, Value>();
+      if (input.pattern === undefined && notation !== undefined &&
+          Object.keys(input).some(id => context.incoming.has(`${node.id}:${id}`))) {
+        let prefix = "nodeColorStep";
+        while (notation.includes(prefix)) prefix += "_";
+        notation = replaceColorPatternTokens(notation, index => {
+          const id = listInputId("color", index);
+          if (!context.incoming.has(`${node.id}:${id}`)) return;
+          const name = prefix + index;
+          wired.set(name, input[id]);
+          return name;
+        });
+        if (!wired.size) return input["color-1"];
+      }
       const palette = new Map<string, ColorValue>();
-      const pattern = typeof input.pattern === "string" ? mini(input.pattern) : reify(input.pattern);
-      return pattern.fmap((value: unknown) => {
+      const resolveColor = (value: unknown) => {
         const name = String(value);
         const color = palette.get(name) ?? colorFromCss(name) ?? whiteColor;
         palette.set(name, color);
         return color;
-      });
+      };
+      const pattern = notation === undefined ? reify(saved) : mini(notation);
+      return wired.size ? pattern.squeezeBind((value: unknown) => reify(wired.get(String(value)) ?? resolveColor(value))) : pattern.fmap(resolveColor);
     }
     case "colorRamp": {
       const stops = rampStops(node);
@@ -475,6 +505,7 @@ function buildNode(
       return read(setter.id);
     }
     case "output": return image;
+    case "createVariable": throw new Error("A Create Variable node has no output.");
     case "junction":
     case "cableEnd": throw new Error("A cable point cannot be evaluated directly.");
   }
@@ -484,12 +515,13 @@ function previewKey(target: PreviewTarget) { return JSON.stringify([target.id, B
 
 function registerGraph(
   draft: Graph, targets?: readonly PreviewTarget[], transport?: NodeTransport,
-  motions = new NodeMotions(new NodeTime(graphTempoRate(draft))),
+  motions = new NodeMotions(new NodeTime(graphTempoRate(draft), 0, graphTimeUpdates(draft))),
 ) {
   const graph = signalGraph(draft);
+  const outputs = outputNodesForEvaluation(draft);
   const previews = new Map<string, PreviewValue>();
   const read = buildValues(graph, targets !== undefined, transport, motions);
-  let tempo: Value = graph.tempoRate === undefined && graph.tempo !== undefined ? graph.tempo : graphTempoRate(graph) * 60;
+  let tempo: Value = graph.tempoRate === undefined ? graph.tempo ?? CYCLES_PER_SECOND * 60 : CYCLES_PER_SECOND * 60;
   const tempoNode = graph.nodes.filter(node => node.kind === "tempo").at(-1);
   if (tempoNode) {
     try { tempo = read(tempoNode.id); }
@@ -501,19 +533,22 @@ function registerGraph(
       const key = previewKey(target);
       const node = graph.nodes.find(item => item.id === id);
       if (!node) continue;
+      if (node.kind === "output" && !outputs.includes(node)) {
+        previews.set(key, { empty: true });
+        continue;
+      }
       try {
         const value = read(id, target.showRamp ? rampPreview : undefined);
         if (value instanceof PixelField || (!target.showRamp && isRenderable(previewType(graph, node)))) {
           const layer = `__auto_preview_${id}`;
           registerAutoHidden(layer, value instanceof PixelField ? fieldRaster(value) : value as Pattern);
           previews.set(key, { layer });
-        } else previews.set(key, { value });
+        } else previews.set(key, { value, elapsed: node.kind === "time" });
       } catch (error) {
         previews.set(key, { error: error instanceof Error ? error.message : String(error) });
       }
     }
   } else {
-    const outputs = graph.nodes.filter(node => node.kind === "output");
     if (!outputs.length) throw new Error("Add an Output node to run this graph.");
     for (const node of outputs) call(read(node.id) as Pattern, "p", "$");
   }
@@ -544,6 +579,7 @@ export interface PreviewTarget {
   canvas?: HTMLCanvasElement;
   status: HTMLElement;
   samples: number[];
+  timeHistory?: { revision: number; samples: { wall: number; value: number }[] };
   gradient?: Gradient;
   showRamp?: (gradient?: Gradient) => void;
   color?: string;
@@ -608,7 +644,7 @@ export class NodePreviews {
         this.prepareRenderer(ratio);
         if (!this.renderer?.isContextLost()) this.frameRenderer?.render(result.screens, result.namedScreens, cycle, cps, cycle, now);
       }
-      for (const target of batch) this.drawTarget(target, result.previews.get(previewKey(target)), cycle);
+      for (const target of batch) this.drawTarget(target, result.previews.get(previewKey(target)), cycle, now, time);
     } catch (error) {
       for (const target of batch) target.status.textContent = error instanceof Error ? error.message : String(error);
     } finally {
@@ -646,8 +682,13 @@ export class NodePreviews {
     }
   }
 
-  private drawTarget(target: PreviewTarget, preview: PreviewValue | undefined, cycle: number) {
+  private drawTarget(target: PreviewTarget, preview: PreviewValue | undefined, cycle: number, now: number, time: NodeTime) {
     if (!preview) return;
+    if ("empty" in preview) {
+      if (target.canvas) target.canvas.hidden = true;
+      target.status.textContent = "";
+      return;
+    }
     if ("error" in preview) {
       if (target.gradient) target.showRamp?.();
       target.gradient = undefined;
@@ -693,6 +734,7 @@ export class NodePreviews {
       target.status.textContent = "";
       return;
     }
+    const elapsed = preview && "value" in preview && preview.elapsed;
     target.status.textContent = typeof value === "number" ? String(Number(value.toFixed(3))) : String(value ?? "—");
     if (!target.canvas) return;
     const g = target.canvas.getContext("2d")!;
@@ -705,12 +747,25 @@ export class NodePreviews {
     target.color = undefined;
     const chart = dynamic && typeof value === "number" && Number.isFinite(value);
     target.canvas.hidden = !chart;
-    if (!chart) { target.samples.length = 0; return; }
-    target.samples.push(value);
-    if (target.samples.length > 80) target.samples.shift();
-    const lo = Math.min(0, ...target.samples), hi = Math.max(1, ...target.samples);
+    if (!chart) { target.samples.length = 0; target.timeHistory = undefined; return; }
+    let points: { x: number; value: number }[];
+    if (elapsed) {
+      const windowStart = now - 5000;
+      if (target.timeHistory?.revision !== time.revision) target.timeHistory = { revision: time.revision, samples: [] };
+      const history = target.timeHistory.samples;
+      history.push({ wall: now, value: time.unwrappedElapsed(target.id, cycle) });
+      while (history[0].wall < windowStart) history.shift();
+      const origin = history[0].value;
+      points = history.map(sample => ({ x: (sample.wall - windowStart) / 5000, value: sample.value - origin }));
+    } else {
+      target.samples.push(value);
+      if (target.samples.length > 80) target.samples.shift();
+      points = target.samples.map((sample, index) => ({ x: index / 79, value: sample }));
+    }
+    const values = points.map(point => point.value);
+    const lo = Math.min(0, ...values), hi = Math.max(elapsed ? 0.01 : 1, ...values);
     g.beginPath();
-    target.samples.forEach((sample, index) => g.lineTo(index / 79 * width, 2 + (hi - sample) / (hi - lo) * (height - 4)));
+    points.forEach(point => g.lineTo(point.x * width, 2 + (hi - point.value) / (hi - lo) * (height - 4)));
     g.strokeStyle = getComputedStyle(target.canvas).color;
     g.lineWidth = 1.5;
     g.stroke();

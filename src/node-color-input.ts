@@ -55,7 +55,6 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   const surface = document.createElement("div");
   surface.className = "nd-color-surface";
   const wheel = colorButton("Color wheel", "nd-color-wheel");
-  wheel.autofocus = true;
   wheel.setAttribute("aria-description", "Left and right adjust hue. Up and down adjust saturation.");
   const marker = document.createElement("span");
   marker.className = "nd-color-marker";
@@ -75,6 +74,7 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   hexLabel.className = "nd-color-hex-row";
   const hex = document.createElement("input");
   hex.className = "nd-field";
+  hex.autofocus = true;
   hex.spellcheck = false;
   hex.autocomplete = "off";
   hex.maxLength = 9;
@@ -177,6 +177,7 @@ export function colorField(initial: ColorValue | undefined, label: string, commi
   alpha.addEventListener("input", () => { working = { ...working, alpha: alpha.valueAsNumber }; refresh(); });
   level.addEventListener("change", apply);
   alpha.addEventListener("change", apply);
+  hex.addEventListener("focus", () => hex.select());
   hex.addEventListener("input", () => hex.removeAttribute("aria-invalid"));
   hex.addEventListener("change", () => {
     const value = parseHexColor(hex.value, working.alpha);

@@ -43,6 +43,24 @@ describe("PicoDevil node export", () => {
     }
   });
 
+  it("exports the values and connections of sequenced Color inputs", () => {
+    const source = makeNode("color", 0, 0, { color: { hex: "#0000ff", alpha: 0.5 } });
+    const pattern = makeNode("color", 0, 0, {
+      mode: "pattern", inputCount: 2, "color-1": { hex: "#ff0000", alpha: 1 },
+    });
+    const output = makeNode("output", 0, 0);
+    const graph: Graph = {
+      nodes: [source, pattern, output], variables: [],
+      edges: [
+        { from: source.id, to: pattern.id, input: "color-2" },
+        { from: pattern.id, to: output.id, input: "image" },
+      ],
+    };
+    const [screen] = runExport(exportNodeCode(graph, []));
+    expect(screen.queryArc(0.25, 0.25)[0].value).toMatchObject({ color: "#ff0000", colorAlpha: 1 });
+    expect(screen.queryArc(0.75, 0.75)[0].value).toMatchObject({ color: "#0000ff", colorAlpha: 0.5 });
+  });
+
   it("preserves literal text through the PicoDevil transpiler", () => {
     const content = "It's a \"draft\".\nC:\\media";
     const text = makeNode("text", 0, 0, { content });
@@ -100,6 +118,14 @@ describe("PicoDevil node export", () => {
     expect(code).toContain(`// Layer 2 covers the earlier outputs. For a background, put this layer first.\n$: s("#222")`);
     const lastScreen = runExport(code).at(-1)!;
     expect(lastScreen.queryArc(0, 0)[0].value).toEqual({ _type: "color", color: "#222" });
+  });
+
+  it("exports the connected layers in order with an isolated Output in between", () => {
+    const graph = createExampleGraph("space_tv");
+    const code = exportNodeCode(graph, []);
+    const firstOutput = graph.nodes.findIndex(node => node.kind === "output");
+    graph.nodes.splice(firstOutput + 1, 0, makeNode("output", 0, 0));
+    expect(exportNodeCode(graph, [])).toBe(code);
   });
 
   it.each(examples.map(example => example.name))("exports the %s example as native code", name => {

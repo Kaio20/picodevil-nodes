@@ -74,7 +74,11 @@ The Node server lives in a sibling repo at [`../server/`](../server/) — see [`
 
 The Projection panel and its live output window are implemented in `src/node-projection.ts`. They share the corner and edge calibration, corner rounding, and the optional calibration grid. Shift-dragging a corner scales the projection around the opposite corner.
 
-The node graph's Color type carries sRGB and alpha. Color inputs and gradient stops share the picker in `src/node-color-input.ts`. Image inputs render connected Color values as solid fills.
+When Run reports an input error, `src/node-editor.ts` highlights the input identified by `NodeInputError` from `src/node-runtime.ts` and anchors the animated overlay in `src/nodesdevil.css` to its socket.
+
+Run, previews, and code export use `outputNodesForEvaluation` in `src/node-graph.ts` to skip isolated Outputs once an Output has an image source.
+
+The node graph's Color type carries sRGB and alpha. Solid, Pattern, and gradient stops share the picker in `src/node-color-input.ts`. Pattern uses the resizable Color inputs from `src/node-graph.ts`. Saved mininotation patterns keep their timing until resized. Image inputs render connected Color values as solid fills.
 
 Node conversions are defined in `src/node-graph.ts`. Image-to-Float produces a canvas-space field. `src/node-runtime.ts` carries it through Float math, variables, ramps and opacity. `src/webgl-pixel-field.ts` evaluates the field in a hidden GPU pass when the graph needs pixels for a mask or image.
 

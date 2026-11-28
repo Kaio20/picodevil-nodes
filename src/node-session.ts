@@ -1,4 +1,4 @@
-import { cableType, fontAxisFor, fontVariationFor, graphTempoRate, isCablePoint, isFontVariation, isRampStops, keepCompatibleEdges, makeNode, migrateTempo, MIN_GRAPH_ZOOM, nodeKinds, outputType, rampInterpolation, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
+import { cableType, fontAxisFor, fontVariationFor, graphTempoRate, graphTimeUpdates, isCablePoint, isFontVariation, isRampStops, keepCompatibleEdges, makeNode, migrateTempo, MIN_GRAPH_ZOOM, nodeKinds, outputType, rampInterpolation, valueTypes, type Graph, type GraphNode, type Literal, type NodeKind } from "./node-graph";
 import { defaultGradient, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
 import { isColorValue, whiteColor } from "./color-value";
 import type { GraphView } from "./node-editor";
@@ -18,6 +18,7 @@ function validGraph(graph: Graph | undefined): graph is Graph {
   return Boolean(graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges) && Array.isArray(graph.variables) &&
     (graph.tempo === undefined || (Number.isFinite(graph.tempo) && graph.tempo >= 0)) &&
     (graph.tempoRate === undefined || (Number.isFinite(graph.tempoRate) && graph.tempoRate >= 0)) &&
+    (graph.timeUpdates === undefined || (Number.isSafeInteger(graph.timeUpdates) && graph.timeUpdates > 0)) &&
     graph.nodes.every(node => node && typeof node.id === "string" && nodeKinds.includes(node.kind) &&
       Number.isFinite(node.x) && Number.isFinite(node.y) && node.data && typeof node.data === "object" &&
       (!isCablePoint(node) || (cableType(node) && (node.kind === "junction" || node.data.side === "source" || node.data.side === "target"))) &&
@@ -124,7 +125,12 @@ function restoreVariables(graph: Graph): Graph {
   const edges = [...graph.edges];
   const nodes = graph.nodes.map(node => {
     const kind = String(node?.kind);
-    if ((kind !== "get" && kind !== "set") || !node.data || typeof node.data !== "object") return node;
+    if (!node?.data || typeof node.data !== "object") return node;
+    if (kind === "createVariable" && typeof node.data.variable === "string" &&
+        graph.variables.some(variable => variable?.id === node.data.variable)) {
+      return { ...node, kind: "variable" as const, data: { variable: node.data.variable } };
+    }
+    if (kind !== "get" && kind !== "set") return node;
     const { value, ...data } = node.data;
     if (kind === "set" && !edges.some(edge => edge?.to === node.id && edge.input === "value")) {
       const type = graph.variables.find(variable => variable?.id === data.variable)?.type;
@@ -218,6 +224,7 @@ export function loadNodes(): NodeSession | undefined {
     const live = restoreGraph(session.live);
     const patch = (graph: Graph) => JSON.stringify([
       graphTempoRate(graph),
+      graphTimeUpdates(graph),
       graph.nodes.map(({ id, kind, data }) => [id, kind, data]),
       graph.edges,
       graph.variables,

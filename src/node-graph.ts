@@ -1,5 +1,6 @@
 import { defaultGradient, maxGradientStops, rgbInterpolations, type Gradient } from "./gradient";
 import { whiteColor, type ColorValue } from "./color-value";
+import { colorPatternTokens } from "./node-color-pattern";
 import { blendModes, fitModes } from "./renderer-interface";
 import { CYCLES_PER_SECOND } from "./config";
 
@@ -8,15 +9,18 @@ export type Literal = string | number | boolean | ColorValue | readonly RampStop
 export const MIN_GRAPH_ZOOM = 0.12;
 export const MAX_LIST_INPUTS = 32;
 export const VIDEO_TEST_CARD = "nodesdevil:test-card";
-const DEFAULT_TEMPO_RATE = 0.1;
+export const DEFAULT_TIME_RATE = 0.1;
+export const DEFAULT_TIME_UPDATES = 60;
 
 export function listInputCount(node: GraphNode): number {
   const count = node.data.inputCount;
   return typeof count === "number" && Number.isFinite(count) ? Math.min(MAX_LIST_INPUTS, Math.max(1, Math.floor(count))) : 1;
 }
 
-export function listInputId(kind: "video" | "index", index: number): string {
-  return kind === "video" ? `clip-${index + 1}` : index === 0 ? "image" : `image-${index + 1}`;
+export function listInputId(kind: "video" | "index" | "color", index: number): string {
+  if (kind === "video") return `clip-${index + 1}`;
+  if (kind === "color") return `color-${index + 1}`;
+  return index === 0 ? "image" : `image-${index + 1}`;
 }
 
 export interface RampStop { readonly id: string; readonly position: number }
@@ -87,6 +91,8 @@ const textLayerInput: Socket = { id: "image", label: "Text", type: "textLayer" }
 const number = (id: string, label: string, value: number, dragStep?: number): Socket => ({ id, label, type: "number", default: value, dragStep });
 const boolean = (id: string, label: string, value: boolean): Socket => ({ id, label, type: "boolean", default: value });
 const text = (id: string, label: string, value: string): Socket => ({ id, label, type: "text", default: value });
+const solidColorInput: Socket = { id: "color", label: "Color", type: "color", default: { hex: "#ff695b", alpha: 1 } };
+const legacyColorPatternInput = text("pattern", "Color pattern", "#ff695b");
 const modeInput = (choices: readonly [string, ...string[]]): Socket => ({
   ...text("mode", "Mode", choices[0]), choices,
 });
@@ -263,8 +269,8 @@ export const catalog = {
     label: "Color", reference: ["color"], category: "Sources", inputs: [], output: "color",
     help: "Pick a color with opacity, or switch to Pattern to sequence colors. Connect it to a Color input or render it as a solid image.",
     modes: [
-      { id: "solid", label: "Solid", inputs: [{ id: "color", label: "Color", type: "color", default: { hex: "#ff695b", alpha: 1 } }] },
-      { id: "pattern", label: "Pattern", inputs: [text("pattern", "Color pattern", "#ff695b")] },
+      { id: "solid", label: "Solid", inputs: [solidColorInput] },
+      { id: "pattern", label: "Pattern", help: "Sequence Color inputs in equal steps within a cycle." },
     ],
   },
   colorRamp: {
@@ -282,9 +288,9 @@ export const catalog = {
     ],
   },
   time: {
-    label: "Time", category: "Signals", inputs: [], output: "number", outputLabel: "Beats", reference: ["time"],
+    label: "Local Time", aliases: ["Time"], category: "Signals", inputs: [], output: "number", outputLabel: "Elapsed (s)", reference: ["time"],
     extraOutputs: [{ id: "rate", label: "Rate", type: "number" }],
-    help: "Rate matches the global Tempo in beats per second. Beats accumulates at that rate.",
+    help: "Elapsed starts at zero when you add the node and wraps at 32,768 seconds. The global Rate controls how fast it counts from its current value.",
   },
   rand: { label: "Random", reference: ["rand"], category: "Signals", inputs: [], output: "number" },
   fft: { label: "Audio FFT", reference: ["fft"], category: "Signals", inputs: [], output: "number" },
@@ -405,7 +411,11 @@ export const catalog = {
   },
   variable: {
     label: "Variable", aliases: ["Get Variable", "Set Variable"], category: "Variables", inputs: [], outputLabel: "Get Value",
-    help: "Connect a value to set the variable. Without an input cable, the node reads the variable. Each variable can have one connected setter.",
+    help: "Use Set Variables to connect a value and Get Variables to read it. Each variable can have one connected setter.",
+  },
+  createVariable: {
+    label: "Create Variable", category: "Variables", inputs: [],
+    help: "Name a variable and choose its type to make it available to Get and Set nodes.",
   },
   output: { label: "Output", help: "Send an image to the final composition. Layer 1 is at the back. Higher layers are drawn over it.", category: "Output", inputs: [imageInput] },
   junction: { label: "Junction", category: "Routing", inputs: [], hidden: true },
@@ -438,13 +448,18 @@ export interface Graph {
   edges: GraphEdge[];
   variables: Variable[];
   tempoRate?: number;
+  timeUpdates?: number;
   /** Tempo in cycles per minute in older patches. */
   tempo?: number;
 }
 export type NodeDrop = { kind: NodeKind; data?: Record<string, Literal> };
 
 export function graphTempoRate(graph: Graph): number {
-  return graph.tempoRate ?? (graph.tempo === undefined ? DEFAULT_TEMPO_RATE : graph.tempo / 60);
+  return graph.tempoRate ?? (graph.tempo === undefined ? DEFAULT_TIME_RATE : graph.tempo / 60);
+}
+
+export function graphTimeUpdates(graph: Graph): number {
+  return graph.timeUpdates ?? DEFAULT_TIME_UPDATES;
 }
 
 export function makeNode(kind: NodeKind, x: number, y: number, data: Record<string, Literal> = {}): GraphNode {
@@ -454,7 +469,7 @@ export function makeNode(kind: NodeKind, x: number, y: number, data: Record<stri
 export function starterGraph(): Graph {
   const card = makeNode("testCard", 64, 96);
   const output = makeNode("output", 330, 96);
-  return { nodes: [card, output], edges: [{ from: card.id, to: output.id, input: "image" }], variables: [], tempoRate: DEFAULT_TEMPO_RATE };
+  return { nodes: [card, output], edges: [{ from: card.id, to: output.id, input: "image" }], variables: [], tempoRate: DEFAULT_TIME_RATE };
 }
 
 export function definition(kind: NodeKind): NodeDefinition {
@@ -505,6 +520,14 @@ function sourceEdge(graph: Graph, edge: GraphEdge | undefined): GraphEdge | unde
 
 export function hasConnectedInput(graph: Graph, id: string, input: string) {
   return Boolean(sourceEdge(graph, graph.edges.find(edge => edge.to === id && edge.input === input)));
+}
+
+/** Keep partially wired Outputs eligible for validation when another Output has a source. */
+export function outputNodesForEvaluation(graph: Graph): GraphNode[] {
+  const outputs = graph.nodes.filter(node => node.kind === "output");
+  if (outputs.length < 2 || !outputs.some(node => hasConnectedInput(graph, node.id, imageInput.id))) return outputs;
+  const attached = new Set(graph.edges.flatMap(({ from, to }) => [from, to]));
+  return outputs.filter(node => attached.has(node.id));
 }
 
 /** Resolve cables to their signal sources before evaluating the graph. */
@@ -570,7 +593,7 @@ export function expressionOutputType(graph: Graph, node: GraphNode, seen = new S
 
 export function outputType(graph: Graph, node: GraphNode, output?: string, seen?: Set<string>): ValueType | undefined {
   if (output !== undefined) return definition(node.kind).extraOutputs?.find(socket => socket.id === output)?.type;
-  if (node.kind === "variable") return variableFor(graph, node)?.type;
+  if (node.kind === "variable") return node.data.mode === "set" ? undefined : variableFor(graph, node)?.type;
   if (node.kind === "expression") return expressionOutputType(graph, node, seen);
   if (node.kind === "constant") return modeFor(node)?.inputs?.[0]?.type;
   if (node.kind === "junction" || (node.kind === "cableEnd" && node.data.side === "source")) return cableType(node);
@@ -581,7 +604,11 @@ export function outputType(graph: Graph, node: GraphNode, output?: string, seen?
 export function outputsFor(graph: Graph, node: GraphNode): readonly OutputSocket[] {
   const type = outputType(graph, node);
   const def = definition(node.kind);
-  return type ? [{ type, label: def.outputLabel }, ...(def.extraOutputs ?? [])] : [];
+  if (!type) return [];
+  const extra = node.kind === "time"
+    ? def.extraOutputs?.filter(socket => graph.edges.some(edge => edge.from === node.id && edge.output === socket.id))
+    : def.extraOutputs;
+  return [{ type, label: def.outputLabel }, ...(extra ?? [])];
 }
 
 export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false): readonly Socket[] {
@@ -597,6 +624,19 @@ export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false
       const images = Array.from({ length: listInputCount(node) }, (_, index) =>
         ({ ...imageInput, id: listInputId("index", index), label: `Image ${index + 1}`, optional: true }));
       return [...images, ...(modeFor(node)?.inputs ?? [])];
+    }
+    if (node.kind === "color") {
+      if (!includeInactive && modeFor(node)?.id !== "pattern") return [solidColorInput];
+      if (!includeInactive && graph.edges.some(edge => edge.to === node.id && edge.input === legacyColorPatternInput.id)) {
+        return [legacyColorPatternInput];
+      }
+      const saved = typeof node.data.pattern === "string" ? colorPatternTokens(node.data.pattern) : [];
+      const colors = Array.from({ length: saved.length || listInputCount(node) }, (_, index) => ({
+        ...solidColorInput, id: listInputId("color", index),
+        label: index === 0 ? "Color" : `Color ${index + 1}`,
+        default: saved[index]?.color ?? solidColorInput.default,
+      }));
+      return includeInactive ? [solidColorInput, ...colors, legacyColorPatternInput] : colors;
     }
     if (node.kind === "expression" && modeFor(node)?.id === "add" && !includeInactive) {
       return (modeFor(node)?.inputs ?? []).map(socket => ({ ...socket, acceptedTypes: addTypes }));
@@ -618,7 +658,7 @@ export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false
     const modeInputs = includeInactive ? def.modes.flatMap(mode => mode.inputs ?? []) : modeFor(node)?.inputs ?? [];
     return [...def.inputs, ...modeInputs];
   }
-  const type = variableFor(graph, node)?.type;
+  const type = node.data.mode === "get" ? undefined : variableFor(graph, node)?.type;
   return type ? [{ id: "value", label: "Set Value", type, ...(type === "visual" && { acceptsTextLayer: true }) }] : [];
 }
 
@@ -808,18 +848,26 @@ export function withConvertedEdge(graph: Graph, edge: GraphEdge, locate?: () => 
 
 export function insertNodeOnEdge(graph: Graph, node: GraphNode, target: GraphEdge, inputId?: string, outputId?: string) {
   if (target.from === node.id || target.to === node.id || !graph.edges.includes(target)) return;
+  let fallback: Graph | undefined;
   for (const input of inputsFor(graph, node)) {
     if (inputId !== undefined && input.id !== inputId) continue;
     if (graph.edges.some(edge => edge.to === node.id && edge.input === input.id)) continue;
     const branch = withEdge(graph, { ...target, to: node.id, input: input.id });
     if (!branch) continue;
-    for (const output of outputsFor(graph, node)) {
+    fallback ??= branch;
+    const connectedNode = branch.nodes.find(item => item.id === node.id)!;
+    const outputs = node.kind === "convert" ? [{ id: undefined }] : outputsFor(branch, connectedNode);
+    for (const output of outputs) {
       if (outputId !== undefined && (output.id ?? "") !== outputId) continue;
-      const inserted = withEdge(branch, { from: node.id, to: target.to, input: target.input, ...(output.id && { output: output.id }) });
-      if (inserted) return { graph: inserted, spliced: true };
+      const inserted = withEdge(branch, {
+        from: node.id, to: target.to, input: target.input, ...(output.id && { output: output.id }),
+      });
+      if (!inserted) continue;
+      if (node.kind === "convert" && modeFor(inserted.nodes.find(item => item.id === node.id)!) !== modeFor(connectedNode)) continue;
+      return { graph: inserted, spliced: true };
     }
-    return { graph: branch, spliced: false };
   }
+  if (fallback) return { graph: fallback, spliced: false };
 }
 
 export function keepCompatibleEdges(graph: Graph): Graph {

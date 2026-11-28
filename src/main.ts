@@ -24,7 +24,7 @@ import { showFatalOverlay, rendererFailureMessage } from "./fatal-overlay";
 import { FrameRenderer } from "./renderer";
 import type { Renderer } from "./renderer-interface";
 import { EvalController } from "./eval-controller";
-import { graphTempoRate, starterGraph, type Graph } from "./node-graph";
+import { graphTempoRate, graphTimeUpdates, starterGraph, type Graph } from "./node-graph";
 import { NodeEditor } from "./node-editor";
 import { compileLiveGraph, mediaUrl, NodePreviews, readLiveGraph, registerLiveGraph } from "./node-runtime";
 import { NodeMotions, NodeTime, NodeTransport } from "./node-transport";
@@ -127,8 +127,9 @@ const pool = createVideoPoolManager({
 const frameRenderer = new FrameRenderer(activeRenderer, pool, pdMetrics);
 const cpsController = new CpsController(CYCLES_PER_SECOND, performance.now());
 const nodeTransport = new NodeTransport();
-const nodeTime = new NodeTime(CYCLES_PER_SECOND, performance.now());
-let liveMotions = new NodeMotions(nodeTime);
+const liveTime = new NodeTime();
+const previewTime = new NodeTime();
+let liveMotions = new NodeMotions(liveTime);
 
 /**
  * Sets the global cycles per second (tempo). Default is 0.5 (one cycle = 2 seconds).
@@ -232,7 +233,8 @@ function frame() {
   setRuntimeCps(cps);
   nodeTransport.advance(cycle, cps, rafAbsNow);
   if (mode === "nodes") {
-    nodeTime.advance(cycle, cps, rafAbsNow);
+    liveTime.advance(cycle, cps, rafAbsNow);
+    previewTime.advance(cycle, cps, rafAbsNow);
     liveMotions.advance(cycle);
   }
   fftUpdateFrame();
@@ -243,7 +245,8 @@ function frame() {
   // Test hook: expose the live loop's current frame coordinates so a capture
   // harness can phase-sample the running render (re-render the exact live cycle
   // for readback) instead of driving its own competing cycle.
-  (window as any).pdLiveFrame = { cycle, cps, wall: rafAbsNow, beats: nodeTime.position, timeRate: nodeTime.currentRate };
+  (window as any).pdLiveFrame = { cycle, cps, wall: rafAbsNow, elapsed: liveTime.position,
+    timeRate: liveTime.currentRate, timeUpdates: liveTime.currentUpdates };
 
   const frameDuration = performance.now() - rafAbsNow;
   const perfMem = (performance as any).memory;
@@ -256,7 +259,7 @@ function frame() {
 
   flushWarnings();
   if (!nodeEditor.isMovingGraph) {
-    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, cps, nodeTime, canvas.width / canvas.height, nodeEditor.previewNode);
+    previews.draw(nodeEditor.previewGraph, () => nodeEditor.visiblePreviews(), rafAbsNow, cycle, cps, previewTime, canvas.width / canvas.height, nodeEditor.previewNode);
   }
 }
 document.addEventListener("visibilitychange", scheduleFrame);
@@ -293,6 +296,18 @@ const session: NodeSession = savedNodes ?? {
   view: { x: 0, y: 0, zoom: 1, previews: [initialGraph.nodes[0].id] },
   media: [],
 };
+function timeNodeIds(...graphs: (Graph | undefined)[]) {
+  return new Set(graphs.flatMap(graph => graph?.nodes.filter(node => node.kind === "time").map(node => node.id) ?? []));
+}
+function syncPreviewTime(now: number, restart = false) {
+  previewTime.configure(graphTempoRate(session.draft), graphTimeUpdates(session.draft), now, restart);
+  previewTime.trackNodes(timeNodeIds(session.draft, session.live), now);
+}
+const timeStart = performance.now();
+const timeGraph = session.live ?? initialGraph;
+liveTime.configure(graphTempoRate(timeGraph), graphTimeUpdates(timeGraph), timeStart, true);
+liveTime.trackNodes(timeNodeIds(session.live), timeStart);
+syncPreviewTime(timeStart, true);
 let mode: "nodes" | "code" = urlState ? "code" : "nodes";
 if (!urlState && hashLooksCorrupt(window.location.hash)) {
   // The link carried a v1 state envelope that didn't decode (truncated by a chat
@@ -359,7 +374,11 @@ function showWorkspace(next: typeof mode) {
 const nodeEditor = new NodeEditor(nodeHost, {
   graph: session.draft,
   view: session.view,
-  save: graph => { session.draft = graph; saveWorkspace(); },
+  save: graph => {
+    session.draft = graph;
+    syncPreviewTime(performance.now());
+    saveWorkspace();
+  },
   setMotionFactor: (id, input, value) => {
     if (!session.live) return false;
     const cycle = cpsController.tick(performance.now()).cycle;
@@ -372,8 +391,8 @@ const nodeEditor = new NodeEditor(nodeHost, {
     try {
       const now = performance.now();
       const phase = cpsController.tick(now);
-      nodeTime.advance(phase.cycle, phase.cps, now);
-      const motions = new NodeMotions(nodeTime, restart ? undefined : liveMotions, restart ? 0 : phase.cycle);
+      liveTime.advance(phase.cycle, phase.cps, now);
+      const motions = new NodeMotions(liveTime, restart ? undefined : liveMotions, restart ? 0 : phase.cycle);
       const next = compileLiveGraph(graph, nodeTransport, motions);
       if (restart) {
         cpsController.reset(now);
@@ -383,16 +402,21 @@ const nodeEditor = new NodeEditor(nodeHost, {
       restoreRegistry(next.registry);
       if (graph.nodes.some(node => node.kind === "tempo")) cpsController.setCpm(next.tempo, now);
       else if (cpsController.cpsPattern || cpsController.cyclesPerSecond !== CYCLES_PER_SECOND) cpsController.setCps(CYCLES_PER_SECOND, now);
-      nodeTime.setRate(graphTempoRate(graph), now, restart);
+      liveTime.configure(graphTempoRate(graph), graphTimeUpdates(graph), now, restart);
+      const activeTimeNodes = timeNodeIds(graph);
+      liveTime.trackNodes(activeTimeNodes, now, restart ? undefined : previewTime);
       const playback = cpsController.tick(now);
-      nodeTime.advance(playback.cycle, playback.cps, now);
+      liveTime.advance(playback.cycle, playback.cps, now);
+      previewTime.advance(playback.cycle, playback.cps, now);
       evalController.screens = next.screens;
       evalController.namedScreens = next.namedScreens;
       session.live = graph;
+      syncPreviewTime(now, restart);
+      previewTime.alignNodes(activeTimeNodes, liveTime, now);
       saveWorkspace();
       return null;
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return error instanceof Error ? error : new Error(String(error));
     }
   },
   showCode: () => showWorkspace("code"),
