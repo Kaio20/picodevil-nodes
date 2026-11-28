@@ -18,6 +18,8 @@ Once an Output has an image source, **Run**, previews, and **Export Code** skip 
 
 In **Add Node → Variables**, choose **Create Variable** to place a node on the graph. Enter a name, choose a type, and click **Create** or press **Enter** in the name field. The node switches to the new variable with a **Set Value** input and a **Get Value** output. The variable also appears at the top of **Variables** in the toolbar. Use **Set Variables** and **Get Variables** to add dedicated nodes elsewhere in the graph. Each variable can have one connected setter. For fixed numbers, strings, or booleans, use **Constant** under **Sources**.
 
+You can also drag from an input into empty space and choose **Variables → Create Variable**. The new node connects immediately through its typed output. If the input already has a cable, the node goes between that cable's source and the input. Confirm with **Create** to register the variable and keep those connections.
+
 Under **Expressions** in **Add Node**, choose **Add**, **Subtract**, **Multiply**, **Divide**, **Remainder**, **Minimum**, or **Maximum** to calculate with two floats. You can switch operations later in the node's **Mode** dropdown. Enter values directly or connect signals or Float variables to **A** and **B**. Division and remainder return `0` when **B** is `0`. For image layers, search for **Add** or **Multiply** and select the corresponding **Blend** result.
 
 ## Type conversion and pixel values

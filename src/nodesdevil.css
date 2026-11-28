@@ -605,6 +605,10 @@ button.nd-node-title:hover { text-decoration: underline; }
 .nd-variables > .nd-variable-form { padding-top: 7px; }
 .nd-variable-form > input { grid-column: 1 / -1; }
 .nd-variables .nd-variable-form > input, .nd-variables .nd-choice-trigger { min-height: 28px; }
+.nd-create-variable-form { grid-template-columns: minmax(0, 1fr); }
+.nd-variable-type-row { padding: 0; }
+.nd-variable-type-row > .nd-choice-field { width: 100%; }
+.nd-variable-type-row > .nd-port[data-input=""] { left: auto; right: -16px; }
 .nd-drop-ghost { position: absolute; pointer-events: none; z-index: 4; padding: 7px 19px; color: var(--nd-category-fg, var(--fg-bright)); background: var(--nd-category-color, var(--bg-popover)); border: 1px dashed currentColor; border-radius: 3px; }
 .nd-drop-ghost.blocked { background: var(--bg-popover); border-color: var(--nd-color-boolean); color: #f6757a; }
 .nd-insert-hint { position: absolute; z-index: 4; white-space: nowrap; color: var(--fg-bright); border-color: var(--fg-dim); }

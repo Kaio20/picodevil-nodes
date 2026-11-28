@@ -937,7 +937,7 @@ try {
   const creatorPosition = await creator.evaluate(node => [(node as HTMLElement).style.left, (node as HTMLElement).style.top]);
   assert.equal(await creator.locator(".nd-node-title").textContent(), "Create Variable");
   assert.equal(await nodeResults.isVisible(), false);
-  assert.equal(await creator.locator(".nd-port").count(), 0);
+  assert.equal(await creator.getByRole("button", { name: "Create Variable Get Value output (number)", exact: true }).count(), 1);
   assert(await variableName.evaluate(input => document.activeElement === input));
   assert.equal(await variableType.getAttribute("data-value"), "number");
   await variableName.fill("Enabled");

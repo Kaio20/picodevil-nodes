@@ -820,7 +820,7 @@ export class NodeEditor {
     }
     if (node.kind === "createVariable") body.append(this.makeVariableForm(node));
     const outputRows = document.createDocumentFragment();
-    const outputs = outputsFor(this.graph, node);
+    const outputs = node.kind === "createVariable" ? [] : outputsFor(this.graph, node);
     for (const output of outputs.length || node.kind !== "expression" ? outputs : [{ id: undefined, label: "Value", type: undefined }]) {
       const row = element("div", "nd-port-row nd-port-out");
       if (output.type) row.dataset.type = output.type;
@@ -835,7 +835,7 @@ export class NodeEditor {
       rate.append(this.makeTimeRateField());
       body.append(rate);
     }
-    const inputs = inputsFor(this.graph, node);
+    const inputs = node.kind === "createVariable" ? [] : inputsFor(this.graph, node);
     const colorPattern = node.kind === "color" && activeMode?.id === "pattern";
     let ramp: ReturnType<typeof gradientField> | undefined;
     if (node.kind === "colorRamp") {
@@ -1164,7 +1164,8 @@ export class NodeEditor {
     }
     const connected = edges.length > 0;
     socket.dataset.tooltip = `${label} · ${types}${connected ? "\nAlt-click to disconnect" : ""}`;
-    const useInputLabel = node.kind === "variable" || node.kind === "junction" || (node.kind === "colorRamp" && inputSocket?.type === "color");
+    const useInputLabel = node.kind === "variable" || node.kind === "createVariable" || node.kind === "junction" ||
+      (node.kind === "colorRamp" && inputSocket?.type === "color");
     const inputName = input && !type ? "input" : useInputLabel ? inputSocket?.label : input;
     socket.setAttribute("aria-label", `${definition(node.kind).label} ${inputName ?? (outputLabel ? outputLabel + " output" : "output")} (${type ?? "unassigned"})`);
     socket.addEventListener("pointerdown", event => this.startWire(event, port));
@@ -2041,6 +2042,32 @@ export class NodeEditor {
     }
   }
 
+  private connectCreatedVariable(graph: Graph, id: string, target: Port): Graph | undefined {
+    const destination = graph.nodes.find(node => node.id === target.node);
+    if (!destination || !inputsFor(graph, destination).some(socket => socket.id === target.input)) return;
+    const incoming = graph.edges.find(edge => edge.to === target.node && edge.input === target.input);
+    const next = incoming ? this.connect({ ...graph, edges: graph.edges.filter(edge => edge !== incoming) },
+      { node: incoming.from, output: incoming.output }, { node: id, input: "value" }) : graph;
+    return next && this.connect(next, { node: id }, target);
+  }
+
+  private variableTypesFor(node: GraphNode, target?: Port) {
+    const destination = target && this.graph.nodes.find(item => item.id === target.node);
+    const socket = target && destination && inputsFor(this.graph, destination).find(socket => socket.id === target.input);
+    if (target && !socket) return [];
+    const incoming = target && this.edgesAt(target)[0];
+    const source = incoming && this.graph.nodes.find(item => item.id === incoming.from);
+    const preferred = (incoming && source && outputType(this.graph, source, incoming.output)) ?? socket?.type;
+    const otherNodes = this.graph.nodes.filter(item => item.id !== node.id);
+    const ordered = preferred ? [preferred, ...valueTypes.filter(type => type !== preferred)] : valueTypes;
+    return ordered.filter(type => {
+      const candidate = { ...node, data: { ...node.data, type } };
+      const graph = { ...this.graph, nodes: [...otherNodes, candidate] };
+      return target ? this.connectCreatedVariable(graph, node.id, target) !== undefined
+        : keepCompatibleEdges(graph).edges.length === graph.edges.length;
+    });
+  }
+
   private addAt(drop: NodeDrop, point: Point, attach?: AttachNode) {
     const node = makeNode(drop.kind, point.x, point.y, drop.data);
     const graph = { ...this.graph, nodes: [...this.graph.nodes, node] };
@@ -2083,6 +2110,15 @@ export class NodeEditor {
       if (port && kind === "output") continue;
       const def = definition(kind);
       if (def.hidden) continue;
+      if (port && kind === "createVariable") {
+        if (!port.input) continue;
+        const [type] = this.variableTypesFor(makeNode(kind, position.x, position.y), port);
+        if (type) choices.push({
+          drop: { kind, data: { type } },
+          name: def.label, category: def.category, search: [def.label, kind],
+        });
+        continue;
+      }
       const menuModes = def.modes;
       const options = kind === "variable" ? (["get", "set"] as const).flatMap(mode => {
         const action = mode === "get" ? "Get" : "Set";
@@ -2144,7 +2180,11 @@ export class NodeEditor {
       }
     }
     const { browser, search } = createNodeMenu(choices, drop => {
-      if (this.addAt(drop, position, attach)) this.closeMenu(false);
+      const connect = drop.kind === "createVariable" && port ? (graph: Graph, node: GraphNode) => {
+        const connected = this.connectCreatedVariable(graph, node.id, port);
+        return connected && { graph: connected };
+      } : attach;
+      if (this.addAt(drop, position, connect)) this.closeMenu(false);
     });
     this.showMenu(point, [browser], cable && (() => this.disconnectEdges(cable.detached)), true);
     search.focus();
@@ -2327,17 +2367,26 @@ export class NodeEditor {
   }
 
   private makeVariableForm(node?: GraphNode) {
-    const form = element("form", "nd-variable-form");
+    const form = element("form", node ? "nd-variable-form nd-create-variable-form" : "nd-variable-form");
     const input = element("input", "nd-field");
     input.placeholder = "Variable name";
     input.required = true;
     input.value = String(node?.data.name ?? "");
     input.setAttribute("aria-label", "Variable name");
-    let kind = valueTypes.find(type => type === node?.data.type) ?? "number";
-    const kinds = nodeChoiceField<ValueType>(valueTypes.map(type => [type, typeLabels[type], undefined, undefined, type]),
+    const target = typeof node?.data.targetNode === "string" && typeof node.data.targetInput === "string"
+      ? { node: node.data.targetNode, input: node.data.targetInput } : undefined;
+    const currentType = node ? outputType(this.graph, node)! : "number";
+    const wired = node && this.graph.edges.some(edge => edge.from === node.id || edge.to === node.id);
+    const compatible = node && (wired || target) ? this.variableTypesFor(node, target) : [];
+    const types = compatible.length ? compatible : wired ? [currentType] : valueTypes;
+    let kind = types.includes(currentType) ? currentType : types[0];
+    const kinds = nodeChoiceField<ValueType>(types.map(type => [type, typeLabels[type], undefined, undefined, type]),
       kind, "Variable type", type => {
         kind = type;
-        if (node) this.editLiteral(node.id, "type", type, true);
+        if (node) {
+          this.setData(node, "type", type);
+          this.cards.get(node.id)?.querySelector<HTMLElement>(".nd-choice-trigger")?.focus();
+        }
       });
     let editing = false;
     input.addEventListener("input", () => {
@@ -2358,13 +2407,24 @@ export class NodeEditor {
       const nodes = node ? this.graph.nodes.map(item => item.id === node.id
         ? { ...item, kind: "variable" as const, data: { variable: variable.id } } : item)
         : this.graph.nodes;
-      this.change({ ...this.graph, nodes, variables: [variable, ...this.graph.variables] });
+      const graph = { ...this.graph, nodes, variables: [variable, ...this.graph.variables] };
+      const connected = node && target && this.connectCreatedVariable(graph, node.id, target);
+      this.change(connected || graph);
       if (node) this.setVariablesOpen(true);
       this.variablesButton.focus();
     });
     const submit = element("button", "nd-button", node ? "Create" : "Add");
     submit.type = "submit";
-    form.append(input, kinds.field, submit);
+    form.append(input);
+    if (node) {
+      const row = element("div", "nd-port-row nd-variable-type-row");
+      const set = { input: "value" };
+      if (this.edgesAt({ node: node.id, ...set }).length) row.append(this.port(node, currentType, set));
+      const output = this.port(node, currentType, {}, "Get Value");
+      row.append(kinds.field, output);
+      form.append(row);
+    } else form.append(kinds.field);
+    form.append(submit);
     return form;
   }
 

@@ -155,6 +155,7 @@ export function acceptsPixelField(node: GraphNode, input: string) {
     case "expression":
     case "range":
     case "variable":
+    case "createVariable":
     case "junction":
     case "cableEnd": return true;
     case "constant": return node.data.mode !== "text";
@@ -594,6 +595,7 @@ export function expressionOutputType(graph: Graph, node: GraphNode, seen = new S
 export function outputType(graph: Graph, node: GraphNode, output?: string, seen?: Set<string>): ValueType | undefined {
   if (output !== undefined) return definition(node.kind).extraOutputs?.find(socket => socket.id === output)?.type;
   if (node.kind === "variable") return node.data.mode === "set" ? undefined : variableFor(graph, node)?.type;
+  if (node.kind === "createVariable") return valueTypes.find(type => type === node.data.type) ?? "number";
   if (node.kind === "expression") return expressionOutputType(graph, node, seen);
   if (node.kind === "constant") return modeFor(node)?.inputs?.[0]?.type;
   if (node.kind === "junction" || (node.kind === "cableEnd" && node.data.side === "source")) return cableType(node);
@@ -615,6 +617,10 @@ export function inputsFor(graph: Graph, node: GraphNode, includeInactive = false
   if (isCablePoint(node)) {
     const type = cableType(node);
     return type && (node.kind === "junction" || node.data.side === "target") ? [{ id: cableInput, label: "Input", type }] : [];
+  }
+  if (node.kind === "createVariable") {
+    const type = outputType(graph, node)!;
+    return [{ id: "value", label: "Set Value", type, optional: true, ...(type === "visual" && { acceptsTextLayer: true }) }];
   }
   if (node.kind !== "variable") {
     const def = definition(node.kind);
@@ -673,6 +679,7 @@ export function inputType(graph: Graph, node: GraphNode, input: string): ValueTy
 }
 
 export function previewType(graph: Graph, node: GraphNode): ValueType | undefined {
+  if (node.kind === "createVariable") return;
   return node.kind === "output" ? "visual" : node.kind === "tempo" ? "number" : outputType(graph, node);
 }
 

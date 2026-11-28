@@ -505,7 +505,10 @@ function buildNode(
       return read(setter.id);
     }
     case "output": return image;
-    case "createVariable": throw new Error("A Create Variable node has no output.");
+    case "createVariable": {
+      if (input.value !== undefined) return input.value;
+      throw new Error("Create the variable to use its output.");
+    }
     case "junction":
     case "cableEnd": throw new Error("A cable point cannot be evaluated directly.");
   }

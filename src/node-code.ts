@@ -257,6 +257,7 @@ export function exportNodeCode(draft: Graph, media: readonly MediaEntry[]): stri
       }
       case "constant":
       case "tempo": return value();
+      case "createVariable": return input("value");
       case "variable": {
         const setter = setters.get(node.data.variable);
         if (!setter || !graph.variables.some(item => item.id === node.data.variable)) return;
